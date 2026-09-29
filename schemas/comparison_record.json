@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["fixture_id", "tool", "label", "expected_signals", "observed_findings", "observed_categories", "max_severity", "parse_ok", "exit_code", "notes"],
+  "properties": {
+    "fixture_id": {"type": "string"},
+    "tool": {"enum": ["cisco", "nvidia", "agentguard"]},
+    "label": {"type": "string"},
+    "expected_signals": {"type": "array", "items": {"type": "string"}},
+    "observed_findings": {"type": "integer", "minimum": 0},
+    "observed_categories": {"type": "array", "items": {"type": "string"}},
+    "max_severity": {"type": "string"},
+    "parse_ok": {"type": "boolean"},
+    "exit_code": {"type": ["integer", "null"]},
+    "notes": {"type": "string"}
+  }
+}

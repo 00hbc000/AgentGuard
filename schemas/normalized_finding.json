@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["tool", "tool_version", "analyzer", "rule_id", "category", "severity", "confidence", "file_path", "line_number", "message", "evidence", "remediation", "fingerprint", "raw"],
+  "properties": {
+    "tool": {"enum": ["cisco", "nvidia", "agentguard"]},
+    "tool_version": {"type": "string"},
+    "analyzer": {"type": "string"},
+    "rule_id": {"type": "string"},
+    "category": {"type": "string"},
+    "severity": {"enum": ["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"]},
+    "confidence": {"type": ["number", "null"]},
+    "file_path": {"type": "string"},
+    "line_number": {"type": ["integer", "null"]},
+    "message": {"type": "string"},
+    "evidence": {},
+    "remediation": {"type": ["string", "null"]},
+    "fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "raw": {"type": "object"}
+  }
+}

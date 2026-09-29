@@ -1,0 +1,12 @@
+# Local upstream reference checkouts are intentionally not part of AgentGuard.
+tools/
+
+# Scan outputs and local runtime state
+runs/
+reports/
+fixtures/
+artifacts/
+*.pyc
+__pycache__/
+.venv/
+.env
