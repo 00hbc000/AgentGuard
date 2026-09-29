@@ -97,7 +97,7 @@ class ScanResult:
             "fixture_path": self.materialized_path,
             "scanned_at_utc": self.created_at,
             "tools_used": tools_used,
-            "tool_versions": {run.tool: run.tool_version for run in self.tool_runs},
+            "tool_versions": {**{run.tool: run.tool_version for run in self.tool_runs}, "agentguard": "0.1.0"},
             "scan_status": self.scan_status,
             "aggregate_severity": self.aggregate_severity,
             "finding_count": len(self.findings),

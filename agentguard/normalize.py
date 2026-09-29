@@ -67,18 +67,23 @@ def normalize_nvidia(report: dict[str, Any], tool_version: str = "2.12.0") -> li
         normalized = dict(item)
         normalized["file_path"] = location.get("file") or item.get("file")
         normalized["line_number"] = location.get("start_line") or item.get("start_line")
-        evidence = item.get("evidence")
+        normalized["snippet"] = item.get("code_snippet") or item.get("snippet") or item.get("evidence")
+        evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+        for key in ("finding", "explanation", "code_snippet"):
+            if item.get(key) is not None:
+                evidence[key] = item[key]
+        message = item.get("message") or item.get("title") or item.get("pattern") or item.get("finding") or item.get("explanation") or "SkillSpector finding"
         result.append(Finding(
             tool="nvidia", tool_version=tool_version,
             # NVIDIA finding_id is intentionally retained only in raw_finding.
-            finding_id="", rule_id=str(item.get("rule_id") or "UNKNOWN"),
+            finding_id="", rule_id=str(item.get("rule_id") or item.get("id") or "UNKNOWN"),
             category=str(item.get("category") or "unknown"),
             severity=normalize_severity(item.get("severity")),
-            message=str(item.get("message") or item.get("title") or "SkillSpector finding"),
-            description=item.get("description") or item.get("message"),
+            message=str(message),
+            description=item.get("description") or item.get("explanation") or item.get("message"),
             confidence=item.get("confidence"), remediation=item.get("remediation"),
             location=_location(normalized),
-            evidence=evidence if isinstance(evidence, dict) else {"text": evidence} if evidence else {},
+            evidence=evidence,
             raw_finding=item,
         ))
     return result
