@@ -2,6 +2,8 @@
 
 This branch contains the complete tracked AgentGuard project.
 
+For a short classmate setup guide, see [CLASSMATE-KALI-SETUP.md](CLASSMATE-KALI-SETUP.md).
+
 ## Clone
 
 ```bash
