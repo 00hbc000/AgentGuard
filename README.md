@@ -71,3 +71,7 @@ pytest -q
 ```
 
 The benchmark-driven test protocol is documented in [docs/TESTING-PROTOCOL.md](docs/TESTING-PROTOCOL.md). MaliciousAgentSkillsBench labels are not executable skill packages and must not be used as direct scan inputs.
+
+## Team handoff
+
+See [docs/TEAM-HANDOFF.md](docs/TEAM-HANDOFF.md) for cloning the shared branch, setting up Kali/Windows environments, running tests, configuring external scanners, and starting the findings dashboard.

@@ -1,6 +1,6 @@
 # Tester prompt: static scanner compatibility run
 
-Copy this prompt to the Kali test operator.
+Copy this pro mpt to the Kali test operator.
 
 ---
 
