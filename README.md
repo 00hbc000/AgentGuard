@@ -49,6 +49,20 @@ python -m agentguard.cli scan-all fixtures --no-external --output artifacts/agen
 python -m agentguard.cli compare --input artifacts/agentguard --output artifacts/comparison.json
 ```
 
+GitHub repository URLs can be scanned directly. Standard repository links and
+branch/subdirectory links such as `/tree/main/skills/my-skill` are accepted; the repository is shallow-cloned
+into a temporary workspace and its contents are never executed:
+
+```bash
+python -m agentguard.cli scan https://github.com/trailofbits/overtly-malicious-skills \
+	--output artifacts/github-scan
+
+# Scan one skill inside a collection repository
+python -m agentguard.cli scan \
+	https://github.com/trailofbits/overtly-malicious-skills/tree/main/skills/csv-summarizer \
+	--output artifacts/github-skill
+```
+
 Exit codes: `0` is below the configured threshold, `1` meets it, and `2` means malformed input, incomplete analysis, or scanner error. Use `--fail-on-severity INFO|LOW|MEDIUM|HIGH|CRITICAL` to change the threshold.
 
 ## Native gap rules

@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from agentguard.custom_rules import incomplete_scan
+from agentguard.ingest import _github_clone_spec
 from agentguard.orchestrator import scan
 
 
@@ -31,3 +32,15 @@ def test_result_can_be_serialized(tmp_path):
     payload = result.to_dict()
     json.dumps(payload)
     assert payload["scan_status"] == "complete"
+
+
+def test_github_repository_url_is_normalized():
+    assert _github_clone_spec("https://github.com/example/skill") == (
+        "https://github.com/example/skill.git", None, None
+    )
+
+
+def test_github_tree_url_preserves_branch_path():
+    assert _github_clone_spec("https://github.com/example/skill/tree/release/v1") == (
+        "https://github.com/example/skill.git", "release", "v1"
+    )

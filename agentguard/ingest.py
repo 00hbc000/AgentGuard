@@ -81,6 +81,25 @@ def _download(url: str, destination: Path) -> Path:
     return target
 
 
+def _github_clone_spec(source: str) -> tuple[str, str | None, str | None] | None:
+    """Return a clone URL, optional branch, and optional repository subpath."""
+    parsed = urllib.parse.urlparse(source)
+    if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != "github.com":
+        return None
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) < 2:
+        return None
+    owner, repository = parts[0], parts[1]
+    if repository.endswith(".git"):
+        repository = repository[:-4]
+    branch = None
+    subpath = None
+    if len(parts) >= 4 and parts[2] == "tree":
+        branch = parts[3]
+        subpath = "/".join(parts[4:]) or None
+    return f"https://github.com/{owner}/{repository}.git", branch, subpath
+
+
 def materialize(source: str, workspace: Path) -> tuple[Path, dict[str, object]]:
     """Materialize a local directory, archive, Git URL, or downloadable archive."""
     workspace.mkdir(parents=True, exist_ok=True)
@@ -105,13 +124,30 @@ def materialize(source: str, workspace: Path) -> tuple[Path, dict[str, object]]:
         count = _extract_tar(downloaded, archive_dir) if name.endswith((".tar.gz", ".tgz")) else _extract_zip(downloaded, archive_dir)
         return archive_dir, {"kind": "remote_archive", "files": count}
 
-    if parsed.scheme in {"http", "https"} and "github.com" in parsed.netloc:
+    github_spec = _github_clone_spec(source)
+    if github_spec:
+        clone_url, branch, subpath = github_spec
         target = workspace / "skill"
-        command = ["git", "clone", "--depth", "1", "--no-recurse-submodules", source, str(target)]
+        command = ["git", "clone", "--depth", "1", "--no-recurse-submodules"]
+        if branch:
+            command.extend(["--branch", branch])
+        command.extend([clone_url, str(target)])
         completed = subprocess.run(command, capture_output=True, text=True, timeout=120, check=False)
         if completed.returncode:
             raise IngestionError(completed.stderr.strip() or "Git clone failed")
-        return target, {"kind": "git", "files": sum(1 for _ in target.rglob("*"))}
+        if subpath:
+            selected = (target / Path(*PurePosixPath(subpath).parts)).resolve()
+            if target.resolve() not in selected.parents or not selected.is_dir():
+                raise IngestionError(f"GitHub tree path not found: {subpath}")
+            target = selected
+        return target, {
+            "kind": "github",
+            "url": source,
+            "clone_url": clone_url,
+            "branch": branch or "default",
+            "subpath": subpath,
+            "files": sum(1 for _ in target.rglob("*")),
+        }
 
     raise IngestionError("Source must be a local directory, archive, GitHub URL, or archive URL")
 
