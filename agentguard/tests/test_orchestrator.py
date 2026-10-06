@@ -34,6 +34,16 @@ def test_result_can_be_serialized(tmp_path):
     assert payload["scan_status"] == "complete"
 
 
+def test_unconfigured_external_tools_do_not_mark_native_scan_incomplete(tmp_path, monkeypatch):
+    fixture = tmp_path / "safe"
+    fixture.mkdir()
+    (fixture / "SKILL.md").write_text("---\nname: x\ndescription: x\n---\n", encoding="utf-8")
+    monkeypatch.delenv("AGENTGUARD_CISCO_COMMAND", raising=False)
+    monkeypatch.delenv("AGENTGUARD_NVIDIA_COMMAND", raising=False)
+    result = scan(str(fixture), include_external=True)
+    assert result.scan_status == "complete"
+
+
 def test_github_repository_url_is_normalized():
     assert _github_clone_spec("https://github.com/example/skill") == (
         "https://github.com/example/skill.git", None, None

@@ -80,6 +80,8 @@ def _status(findings: list[Finding], tool_runs: list[ToolRun], root: Path) -> st
         return "complete" if (root / "SKILL.md").is_file() else "incomplete"
     if all(run.status == "failed" for run in tool_runs):
         return "error"
+    if all(run.status == "skipped" for run in tool_runs):
+        return "complete" if (root / "SKILL.md").is_file() else "incomplete"
     return "complete" if any(run.status == "completed" for run in tool_runs) else "incomplete"
 
 
