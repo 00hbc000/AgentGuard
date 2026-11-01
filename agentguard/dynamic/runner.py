@@ -67,6 +67,29 @@ def _apply_manifests() -> None:
     root = _repo_root()
     for name in ("namespace.yaml", "sink.yaml", "network-policy.yaml"):
         _check(_run(["kubectl", "apply", "-f", str(root / "k8s" / name)], timeout=60), f"Applying {name}")
+    if os.environ.get("AGENTGUARD_AGENT_MODE") == "ollama":
+        cidr = os.environ.get("AGENTGUARD_OLLAMA_CIDR")
+        if not cidr:
+            raise DynamicUnavailable("AGENTGUARD_OLLAMA_CIDR is required for Ollama egress allow-listing")
+        policy = f"""apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-ollama-egress
+  namespace: agentguard-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      agentguard.io/role: skill-sandbox
+  policyTypes: [Egress]
+  egress:
+  - to:
+    - ipBlock:
+        cidr: {cidr}
+    ports:
+    - protocol: TCP
+      port: 11434
+"""
+        _check(_run(["kubectl", "apply", "-f", "-"], input_text=policy, timeout=60), "Applying Ollama egress policy")
     _check(_run([
         "kubectl", "-n", "agentguard-sandbox", "rollout", "status",
         "deployment/agentguard-sink", "--timeout=90s",
@@ -84,6 +107,15 @@ def _run_probe(pod: str, target: str, timeout: int = 20) -> tuple[bool, str]:
 
 
 def _create_pod(pod: str) -> None:
+    agent_env = ""
+    if os.environ.get("AGENTGUARD_AGENT_MODE") == "ollama":
+        agent_env = f"""    - name: AGENTGUARD_AGENT_MODE
+      value: ollama
+    - name: AGENTGUARD_OLLAMA_URL
+      value: {os.environ["AGENTGUARD_OLLAMA_URL"]}
+    - name: AGENTGUARD_OLLAMA_MODEL
+      value: {os.environ.get("AGENTGUARD_OLLAMA_MODEL", "qwen2.5:7b")}
+"""
     manifest = f"""apiVersion: v1
 kind: Pod
 metadata:
@@ -101,7 +133,7 @@ spec:
     env:
     - name: AGENTGUARD_SINK_URL
       value: http://agentguard-sink.agentguard-sandbox.svc.cluster.local:8080
-    securityContext:
+{agent_env}    securityContext:
       allowPrivilegeEscalation: false
       readOnlyRootFilesystem: false
       capabilities:
@@ -138,6 +170,22 @@ def _events_from_logs() -> list[dict]:
     logs = _run(["kubectl", "-n", "agentguard-sandbox", "logs", "deployment/agentguard-sink"], timeout=30)
     events = []
     for line in logs.stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+    return events
+
+
+def _events_from_pod(pod: str) -> list[dict]:
+    result = _run(["kubectl", "-n", "agentguard-sandbox", "exec", pod, "--",
+                   "cat", "/tmp/agentguard-agent-events.jsonl"], timeout=30)
+    if result.returncode:
+        return []
+    events = []
+    for line in result.stdout.splitlines():
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
@@ -188,6 +236,7 @@ def run(root: Path) -> DynamicResult:
             args.extend(["--command", command])
         execute = _run(["kubectl", "-n", namespace, "exec", pod, "--", *args], timeout=int(os.environ.get("AGENTGUARD_DYNAMIC_TIMEOUT", "120")))
         events = _events_from_logs()
+        events.extend(_events_from_pod(pod))
         trace = _run(["kubectl", "-n", namespace, "exec", pod, "--", "cat", "/tmp/agentguard-trace"], timeout=30)
         trace_text = trace.stdout
         if "/honeypots/aws-credentials" in trace_text and events:

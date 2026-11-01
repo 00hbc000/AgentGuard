@@ -15,7 +15,10 @@ def main() -> int:
     if args.phase == "prepare":
         print("AGENTGUARD_PHASE=prepare", flush=True)
         return 0
-    command = args.command or os.environ.get("AGENTGUARD_ENTRYPOINT", "")
+    if os.environ.get("AGENTGUARD_AGENT_MODE") == "ollama":
+        command = "python /opt/agentguard/agent_executor.py"
+    else:
+        command = args.command or os.environ.get("AGENTGUARD_ENTRYPOINT", "")
     if not command and os.path.isfile("/skill/run.py"):
         command = "python /skill/run.py"
     if not command:
