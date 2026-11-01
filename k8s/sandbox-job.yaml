@@ -1,0 +1,28 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: agentguard-sandbox
+  namespace: agentguard-sandbox
+  labels:
+    agentguard.io/role: skill-sandbox
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        agentguard.io/role: skill-sandbox
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: skill
+          image: agentguard-sandbox:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: AGENTGUARD_SINK_URL
+              value: http://agentguard-sink.agentguard-sandbox.svc.cluster.local:8080
+          volumeMounts:
+            - name: skill
+              mountPath: /skill:ro
+      volumes:
+        - name: skill
+          emptyDir: {}

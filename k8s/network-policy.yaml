@@ -1,0 +1,19 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-default-deny-egress
+  namespace: agentguard-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      agentguard.io/role: skill-sandbox
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              agentguard.io/role: sink
+      ports:
+        - protocol: TCP
+          port: 8080

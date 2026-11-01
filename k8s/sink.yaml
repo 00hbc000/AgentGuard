@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentguard-sink
+  namespace: agentguard-sandbox
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      agentguard.io/role: sink
+  template:
+    metadata:
+      labels:
+        agentguard.io/role: sink
+    spec:
+      containers:
+        - name: sink
+          image: agentguard-sink:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentguard-sink
+  namespace: agentguard-sandbox
+spec:
+  selector:
+    agentguard.io/role: sink
+  ports:
+    - port: 8080
+      targetPort: 8080

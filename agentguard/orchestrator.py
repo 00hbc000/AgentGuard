@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 
 from .custom_rules import scan_directory
+from .dynamic import DynamicUnavailable, run as run_dynamic
+from .gate import decide
 from .ingest import IngestionError, materialize
 from .models import Finding, ScanResult, ToolRun
 from .normalize import aggregate_severity, normalize_cisco, normalize_nvidia
@@ -86,7 +88,8 @@ def _status(findings: list[Finding], tool_runs: list[ToolRun], root: Path) -> st
 
 
 def scan(source: str, *, workspace_base: Path | None = None, include_external: bool = True,
-         output_dir: Path | None = None) -> ScanResult:
+         output_dir: Path | None = None, dynamic: bool = False,
+         force_dynamic: bool = False) -> ScanResult:
     scan_id = str(uuid.uuid4())
     created_at = datetime.now(timezone.utc).isoformat()
     base = workspace_base or Path(tempfile.mkdtemp(prefix="agentguard-run-"))
@@ -111,10 +114,41 @@ def scan(source: str, *, workspace_base: Path | None = None, include_external: b
     native = scan_directory(root, nvidia_report=reports["nvidia"], cisco_report=reports["cisco"])
     findings.extend(native)
     status = _status(findings, tool_runs if include_external else [], root)
+    gate_payload = None
+    dynamic_payload = None
+    if dynamic or force_dynamic:
+        decision = decide(findings)
+        gate_payload = {"escalate": decision.escalate, "reason": decision.reason}
+        if force_dynamic or decision.escalate:
+            try:
+                dynamic_result = run_dynamic(root)
+                findings.extend(dynamic_result.findings)
+                dynamic_payload = dynamic_result.to_dict()
+                status = "complete"
+            except DynamicUnavailable as exc:
+                dynamic_payload = {
+                    "status": "error",
+                    "monitoring_tier": "not_active",
+                    "finding_count": 0,
+                    "findings": [],
+                    "events": [],
+                    "error": str(exc),
+                }
+                status = "error"
+        else:
+            dynamic_payload = {
+                "status": "skipped",
+                "monitoring_tier": "not_active",
+                "finding_count": 0,
+                "findings": [],
+                "events": [],
+                "error": None,
+            }
     return ScanResult(scan_id=scan_id, source=source, materialized_path=str(root),
                       created_at=created_at, findings=findings, tool_runs=tool_runs,
                       ingestion=ingestion, scan_status=status,
-                      aggregate_severity=aggregate_severity(findings))
+                      aggregate_severity=aggregate_severity(findings),
+                      gate=gate_payload, dynamic=dynamic_payload)
 
 
 def write_result(result: ScanResult, output_dir: Path) -> Path:

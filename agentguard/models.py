@@ -87,12 +87,14 @@ class ScanResult:
     ingestion: dict[str, Any]
     scan_status: str = "complete"
     aggregate_severity: str = "INFO"
+    gate: dict[str, Any] | None = None
+    dynamic: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         tools_used = [run.tool for run in self.tool_runs if run.status == "completed"]
         if "agentguard" not in tools_used:
             tools_used.append("agentguard")
-        return {
+        payload = {
             "fixture_id": Path(self.source).stem or self.scan_id,
             "fixture_path": self.materialized_path,
             "scanned_at_utc": self.created_at,
@@ -109,3 +111,8 @@ class ScanResult:
             "tool_runs": [run.to_dict() for run in self.tool_runs],
             "ingestion": self.ingestion,
         }
+        if self.gate is not None:
+            payload["decision_gate"] = self.gate
+        if self.dynamic is not None:
+            payload["dynamic"] = self.dynamic
+        return payload

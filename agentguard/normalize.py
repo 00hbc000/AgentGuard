@@ -94,4 +94,6 @@ def normalize_agentguard(items: list[Finding]) -> list[Finding]:
 
 
 def aggregate_severity(findings: list[Finding]) -> str:
+    if any(finding.rule_id == "DYN_HONEYPOT_EXFIL" for finding in findings):
+        return "CRITICAL"
     return max((finding.severity for finding in findings), key=lambda value: _RANK[value], default="INFO")

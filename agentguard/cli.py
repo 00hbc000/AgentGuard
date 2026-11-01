@@ -30,6 +30,9 @@ def build_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument("--no-external", action="store_true")
     scan_parser.add_argument("--output", type=Path, required=True)
     scan_parser.add_argument("--fail-on-severity", choices=["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"], default="MEDIUM")
+    dynamic_group = scan_parser.add_mutually_exclusive_group()
+    dynamic_group.add_argument("--dynamic", action="store_true", help="Run dynamic analysis when the decision gate escalates")
+    dynamic_group.add_argument("--force-dynamic", action="store_true", help="Run dynamic analysis without the decision gate")
     batch_parser = commands.add_parser("scan-all", help="Scan fixture directories")
     batch_parser.add_argument("source")
     batch_parser.add_argument("--no-external", action="store_true")
@@ -50,7 +53,13 @@ def main(argv: list[str] | None = None) -> int:
             serve(args.host, args.port)
             return 0
         if args.command == "scan":
-            result = scan(args.source, include_external=not args.no_external, output_dir=args.output)
+            result = scan(
+                args.source,
+                include_external=not args.no_external,
+                output_dir=args.output,
+                dynamic=args.dynamic or args.force_dynamic,
+                force_dynamic=args.force_dynamic,
+            )
             path = write_result(result, args.output)
             print(json.dumps({"scan_id": result.scan_id, "findings": len(result.findings), "scan_status": result.scan_status, "report": str(path)}, indent=2))
             return _exit_code(result, args.fail_on_severity)
