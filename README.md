@@ -65,6 +65,25 @@ python -m agentguard.cli scan \
 
 Exit codes: `0` is below the configured threshold, `1` meets it, and `2` means malformed input, incomplete analysis, or scanner error. Use `--fail-on-severity INFO|LOW|MEDIUM|HIGH|CRITICAL` to change the threshold.
 
+Dynamic review is opt-in. Gate-driven mode escalates ambiguous static evidence:
+
+```bash
+python main.py scan fixtures/combined-chain --no-external --dynamic --output runs/dynamic
+```
+
+For UI testing without executing a skill or claiming Kubernetes telemetry, use the explicitly synthetic demo:
+
+```bash
+python main.py scan fixtures/safe-minimal --no-external --demo-dynamic --output runs/demo
+```
+
+The real dynamic runner requires a kind cluster, Docker, kubectl, and a
+NetworkPolicy-enforcing CNI. It builds and loads the sandbox and sink images,
+proves that public internet egress is blocked while the internal sink is
+reachable, then runs the configured entrypoint in the sandbox pod. If those
+requirements are not met, the scan fails closed and reports that no skill code
+was executed.
+
 ## Native gap rules
 
 | ID | Gap | Severity |
