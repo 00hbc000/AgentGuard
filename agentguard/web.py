@@ -21,7 +21,7 @@ form{display:flex;gap:10px;margin:28px 0 20px;background:var(--panel);border:1px
 .grid{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(280px,.7fr);gap:18px;margin-top:18px}.panel{padding:21px}.panel h3{margin:0 0 15px;font:800 22px Georgia,serif}.bars{display:grid;gap:10px}.barrow{display:grid;grid-template-columns:88px 1fr 35px;gap:10px;align-items:center;font-size:13px}.track{height:9px;background:#e7e1d6;border-radius:99px;overflow:hidden}.fill{height:100%;border-radius:99px}.critical{--accent:var(--red)}.high{--accent:var(--orange)}.medium{--accent:var(--gold)}.low{--accent:var(--green)}.info{--accent:#728186}.fill{background:var(--accent)}
 .findings{display:grid;gap:12px}.finding{border:1px solid var(--line);border-left:6px solid var(--accent);border-radius:9px;padding:16px;background:#fff}.finding-head{display:flex;justify-content:space-between;gap:16px;align-items:start;flex-wrap:wrap}.badge{color:var(--accent);font-weight:900;font-size:12px;letter-spacing:.08em;word-break:break-word}.finding h4{margin:8px 0;font-size:17px}.finding p{margin:7px 0}.meta{font:12px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted)}details{margin-top:12px;border-top:1px dashed var(--line);padding-top:10px}summary{cursor:pointer;color:var(--teal);font-weight:800;padding:3px 0}.code{white-space:pre-wrap;background:#f5f2ec;border-radius:6px;padding:10px;margin-top:8px;font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;overflow:auto}.fingerprint{word-break:break-all}.toollist{display:flex;flex-wrap:wrap;gap:8px}.tool{background:#edf1ef;border:1px solid #d5dfda;border-radius:999px;padding:6px 10px;font-size:12px;font-weight:800}.error{background:#fff0f1;border:1px solid #e5aab2;color:#8e1e31;padding:14px;border-radius:9px;margin-top:20px;white-space:pre-wrap}
 @media(max-width:900px){.overview{grid-template-columns:repeat(2,1fr)}.hero{grid-column:span 2}.grid{grid-template-columns:1fr}.mast{align-items:start;flex-direction:column}}@media(max-width:550px){.shell{padding:25px 14px}.overview{display:grid;grid-template-columns:1fr 1fr}form{flex-direction:column}button{height:45px}.hero{grid-column:span 2}}
-</style></head><body><main class="shell"><header class="mast"><div><div class="eyebrow">Static security review</div><h1>AgentGuard</h1><p class="muted">One evidence-rich view across Cisco, NVIDIA, and native gap rules.</p></div><div class="trust">No skill execution</div></header><form method="post"><input name="source" value="{source}" placeholder="Local skill directory, archive, or GitHub URL" required><button type="submit">Run static scan</button></form>{content}</main></body></html>"""
+</style></head><body><main class="shell"><header class="mast"><div><div class="eyebrow">Static + dynamic security review</div><h1>AgentGuard</h1><p class="muted">Static evidence, decision-gate routing, and sandbox observations in one view.</p></div><div class="trust">Sandbox never runs on the host</div></header><form method="post"><input name="source" value="{source}" placeholder="Local skill directory, archive, or GitHub URL" required><label><input type="checkbox" name="dynamic" {dynamic_checked}> Gate + dynamic</label><label><input type="checkbox" name="force_dynamic" {force_checked}> Force dynamic</label><label><input type="checkbox" name="demo_dynamic" {demo_checked}> Synthetic demo</label><button type="submit">Run scan</button></form>{content}</main></body></html>"""
 
 
 def _esc(value: object) -> str:
@@ -35,6 +35,8 @@ def _render(result: dict) -> str:
     max_severity = result.get("aggregate_severity", "INFO")
     status = result.get("scan_status", "unknown")
     tools = result.get("tools_used", [])
+    gate = result.get("decision_gate")
+    dynamic = result.get("dynamic")
     cards = []
     for item in findings:
         severity = str(item.get("severity", "INFO")).lower()
@@ -52,7 +54,9 @@ def _render(result: dict) -> str:
     max_count = max(severity_counts.values(), default=1)
     bars = "".join(f"<div class='barrow'><span>{_esc(level.upper())}</span><div class='track'><div class='fill {level}' style='width:{round(severity_counts.get(level,0)/max_count*100)}%'></div></div><strong>{severity_counts.get(level,0)}</strong></div>" for level in ("critical","high","medium","low","info"))
     tool_list = "".join(f"<span class='tool'>{_esc(tool)}</span>" for tool in tools) or "<span class='muted'>No scanner completed</span>"
-    return f"<section class='overview'><div class='hero'><div class='label'>Verdict</div><h2>{_esc(max_severity)}</h2><p class='muted'>{len(findings)} normalized findings · { _esc(status) }</p></div><div class='stat'><span class='label'>Critical</span><span class='value'>{severity_counts.get('critical',0)}</span></div><div class='stat'><span class='label'>High</span><span class='value'>{severity_counts.get('high',0)}</span></div><div class='stat'><span class='label'>Medium</span><span class='value'>{severity_counts.get('medium',0)}</span></div><div class='stat'><span class='label'>Tools</span><span class='value'>{len(tools)}</span></div></section><div class='grid'><section class='panel'><h3>Findings</h3><div class='findings'>{''.join(cards) or '<p class="muted">No findings detected.</p>'}</div></section><aside><section class='panel'><h3>Severity profile</h3><div class='bars'>{bars}</div></section><section class='panel' style='margin-top:18px'><h3>Scanner coverage</h3><div class='toollist'>{tool_list}</div><p class='muted'>{_esc(', '.join(f'{k}: {v}' for k,v in tool_counts.items()))}</p><p class='meta'>Fixture: {_esc(result.get('fixture_id'))}<br>Scan ID: {_esc(result.get('scan_id'))}</p></section></aside></div>"
+    gate_panel = f"<section class='panel'><h3>Decision gate</h3><p><strong>{'Escalate' if gate.get('escalate') else 'Stop'}</strong></p><p class='muted'>{_esc(gate.get('reason'))}</p></section>" if gate else ""
+    dynamic_panel = f"<section class='panel'><h3>Dynamic stage</h3><p><strong>Status:</strong> {_esc(dynamic.get('status'))}</p><p><strong>Monitoring tier:</strong> {_esc(dynamic.get('monitoring_tier'))}</p><p><strong>Dynamic findings:</strong> {_esc(dynamic.get('finding_count'))}</p><p class='muted'>{_esc(dynamic.get('error') or 'No dynamic error')}</p><details><summary>Runtime events</summary><div class='code'>{_esc(json.dumps(dynamic.get('events', []), indent=2))}</div></details></section>" if dynamic else ""
+    return f"<section class='overview'><div class='hero'><div class='label'>Verdict</div><h2>{_esc(max_severity)}</h2><p class='muted'>{len(findings)} normalized findings · { _esc(status) }</p></div><div class='stat'><span class='label'>Critical</span><span class='value'>{severity_counts.get('critical',0)}</span></div><div class='stat'><span class='label'>High</span><span class='value'>{severity_counts.get('high',0)}</span></div><div class='stat'><span class='label'>Medium</span><span class='value'>{severity_counts.get('medium',0)}</span></div><div class='stat'><span class='label'>Tools</span><span class='value'>{len(tools)}</span></div></section><div class='grid'><section class='panel'><h3>Findings</h3><div class='findings'>{''.join(cards) or '<p class="muted">No findings detected.</p>'}</div></section><aside>{gate_panel}{dynamic_panel}<section class='panel' style='margin-top:18px'><h3>Severity profile</h3><div class='bars'>{bars}</div></section><section class='panel' style='margin-top:18px'><h3>Scanner coverage</h3><div class='toollist'>{tool_list}</div><p class='muted'>{_esc(', '.join(f'{k}: {v}' for k,v in tool_counts.items()))}</p><p class='meta'>Fixture: {_esc(result.get('fixture_id'))}<br>Scan ID: {_esc(result.get('scan_id'))}</p></section></aside></div>"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -69,18 +73,33 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/scan":
             source = parse_qs(parsed.query).get("source", [""])[0]
             try:
-                self._send(json.dumps(scan(source).to_dict()), content_type="application/json")
+                query = parse_qs(parsed.query)
+                self._send(json.dumps(scan(
+                    source,
+                    dynamic=query.get("dynamic", ["0"])[0] == "1",
+                    force_dynamic=query.get("force_dynamic", ["0"])[0] == "1",
+                    demo_dynamic=query.get("demo_dynamic", ["0"])[0] == "1",
+                ).to_dict()), content_type="application/json")
             except Exception as exc:
                 self._send(json.dumps({"error": str(exc)}), 400, "application/json")
             return
-        self._send(_PAGE.replace("{source}", "").replace("{content}", "<p class='muted'>Enter a local path or GitHub URL to begin.</p>"))
+        self._send(_PAGE.replace("{source}", "").replace("{content}", "<p class='muted'>Enter a local path or GitHub URL to begin.</p>").replace("{dynamic_checked}", "").replace("{force_checked}", "").replace("{demo_checked}", ""))
 
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
-        source = parse_qs(self.rfile.read(length).decode("utf-8")).get("source", [""])[0]
+        fields = parse_qs(self.rfile.read(length).decode("utf-8"))
+        source = fields.get("source", [""])[0]
         try:
-            result = scan(source).to_dict()
+            result = scan(
+                source,
+                dynamic="dynamic" in fields,
+                force_dynamic="force_dynamic" in fields,
+                demo_dynamic="demo_dynamic" in fields,
+            ).to_dict()
             page = _PAGE.replace("{source}", _esc(source)).replace("{content}", _render(result))
+            page = page.replace("{dynamic_checked}", "checked" if "dynamic" in fields else "")
+            page = page.replace("{force_checked}", "checked" if "force_dynamic" in fields else "")
+            page = page.replace("{demo_checked}", "checked" if "demo_dynamic" in fields else "")
             self._send(page)
         except Exception as exc:
             page = _PAGE.replace("{source}", _esc(source)).replace("{content}", f"<div class='error'>{_esc(exc)}</div>")

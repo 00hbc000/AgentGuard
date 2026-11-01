@@ -33,6 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     dynamic_group = scan_parser.add_mutually_exclusive_group()
     dynamic_group.add_argument("--dynamic", action="store_true", help="Run dynamic analysis when the decision gate escalates")
     dynamic_group.add_argument("--force-dynamic", action="store_true", help="Run dynamic analysis without the decision gate")
+    scan_parser.add_argument("--demo-dynamic", action="store_true", help="Show a synthetic dynamic result; never executes the skill")
     batch_parser = commands.add_parser("scan-all", help="Scan fixture directories")
     batch_parser.add_argument("source")
     batch_parser.add_argument("--no-external", action="store_true")
@@ -59,6 +60,7 @@ def main(argv: list[str] | None = None) -> int:
                 output_dir=args.output,
                 dynamic=args.dynamic or args.force_dynamic,
                 force_dynamic=args.force_dynamic,
+                demo_dynamic=args.demo_dynamic,
             )
             path = write_result(result, args.output)
             print(json.dumps({"scan_id": result.scan_id, "findings": len(result.findings), "scan_status": result.scan_status, "report": str(path)}, indent=2))

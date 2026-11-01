@@ -4,7 +4,7 @@ import os
 import shutil
 from pathlib import Path
 
-from .collector import DynamicResult
+from .collector import DynamicResult, collect_events
 
 
 class DynamicUnavailable(RuntimeError):
@@ -35,4 +35,20 @@ def run(root: Path) -> DynamicResult:
     raise DynamicUnavailable(
         "Kubernetes launcher is not configured in this environment. "
         "No skill code was executed."
+    )
+
+
+def run_demo(root: Path) -> DynamicResult:
+    """Return a clearly synthetic result for UI and collector demonstrations."""
+    if not root.is_dir():
+        raise DynamicUnavailable(f"Dynamic sandbox input is not a directory: {root}")
+    return collect_events(
+        [{
+            "type": "honeypot_exfiltration",
+            "honeypot_hit": True,
+            "path": "/honeypots/aws-credentials",
+            "destination": "demo-sink.invalid",
+            "synthetic": True,
+        }],
+        monitoring_tier="demo_synthetic",
     )
