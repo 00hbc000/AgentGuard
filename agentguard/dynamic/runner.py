@@ -5,8 +5,10 @@ import os
 import shlex
 import shutil
 import subprocess
+import tarfile
 import time
 import uuid
+from io import BytesIO
 from pathlib import Path
 
 from .collector import DynamicResult, collect_events
@@ -109,6 +111,29 @@ spec:
     _check(_run(["kubectl", "-n", "agentguard-sandbox", "wait", "--for=condition=Ready", f"pod/{pod}", "--timeout=90s"], timeout=120), "Waiting for sandbox pod")
 
 
+def _copy_skill(root: Path, pod: str) -> None:
+    archive = BytesIO()
+    with tarfile.open(fileobj=archive, mode="w") as tar:
+        for path in root.rglob("*"):
+            if path.is_file():
+                info = tar.gettarinfo(str(path), arcname=str(path.relative_to(root)))
+                info.uid = info.gid = 0
+                info.uname = info.gname = ""
+                with path.open("rb") as stream:
+                    tar.addfile(info, stream)
+    archive.seek(0)
+    try:
+        process = subprocess.run(
+            ["kubectl", "-n", "agentguard-sandbox", "exec", "-i", pod, "--", "tar", "xf", "-", "-C", "/skill"],
+            input=archive.read(), capture_output=True, timeout=60, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise DynamicUnavailable(f"Copying skill into sandbox failed: {exc}") from exc
+    if process.returncode:
+        detail = (process.stderr or process.stdout).decode(errors="replace").strip()
+        raise DynamicUnavailable(f"Copying skill into sandbox failed: {detail or 'no diagnostic output'}")
+
+
 def _events_from_logs() -> list[dict]:
     logs = _run(["kubectl", "-n", "agentguard-sandbox", "logs", "deployment/agentguard-sink"], timeout=30)
     events = []
@@ -134,7 +159,7 @@ def run(root: Path) -> DynamicResult:
     try:
         _create_pod(pod)
         _check(_run(["kubectl", "-n", namespace, "exec", pod, "--", "mkdir", "-p", "/skill", "/honeypots"], timeout=30), "Preparing sandbox")
-        _check(_run(["kubectl", "-n", namespace, "cp", str(root) + "/.", f"{pod}:/skill"], timeout=60), "Copying skill into sandbox")
+        _copy_skill(root, pod)
         _check(_run(["kubectl", "-n", namespace, "exec", pod, "--", "sh", "-c", "printf 'synthetic-honeypot\\n' > /honeypots/aws-credentials"], timeout=30), "Creating honeypot")
         internet_ok, internet_detail = _run_probe(
             pod,

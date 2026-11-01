@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .custom_rules import scan_directory
-from .dynamic import DynamicUnavailable, run as run_dynamic, run_demo
+from .dynamic import DynamicUnavailable, monitoring_tier, run as run_dynamic, run_demo
 from .gate import decide
 from .ingest import IngestionError, materialize
 from .models import Finding, ScanResult, ToolRun
@@ -133,7 +133,7 @@ def scan(source: str, *, workspace_base: Path | None = None, include_external: b
             except DynamicUnavailable as exc:
                 dynamic_payload = {
                     "status": "error",
-                    "monitoring_tier": "not_active",
+                    "monitoring_tier": monitoring_tier(),
                     "finding_count": 0,
                     "findings": [],
                     "events": [],
