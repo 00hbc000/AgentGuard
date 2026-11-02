@@ -18,10 +18,10 @@ _JOBS_LOCK = threading.Lock()
 
 def _validate_public_git_url(source: str) -> None:
     parsed = urlparse(source.strip())
-    if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() not in {
+    if parsed.scheme != "https" or parsed.hostname not in {
         "github.com", "gitlab.com", "bitbucket.org",
     }:
-        raise ValueError("Only public GitHub, GitLab, and Bitbucket HTTPS URLs are accepted.")
+        raise ValueError("Only public HTTPS GitHub, GitLab, and Bitbucket URLs are accepted.")
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise ValueError("Repository URLs must not contain credentials, query strings, or fragments.")
 
@@ -30,13 +30,14 @@ def _run_job(job_id: str, source: str) -> None:
     with _JOBS_LOCK:
         _JOBS[job_id]["status"] = "running"
     try:
-        result = scan(source, dynamic=True, include_external=True).to_dict()
+        result = scan(source, dynamic=True, force_dynamic=True, include_external=True).to_dict()
     except (OSError, ValueError, RuntimeError) as exc:
         with _JOBS_LOCK:
             _JOBS[job_id].update(status="error", error=str(exc))
         return
     with _JOBS_LOCK:
-        _JOBS[job_id].update(status="complete", result=result)
+        job_status = "partial" if result.get("scan_status") == "partial" else "complete"
+        _JOBS[job_id].update(status=job_status, result=result)
 
 
 def _create_job(source: str) -> str:
@@ -49,7 +50,7 @@ def _create_job(source: str) -> str:
 
 
 _PAGE = """<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AgentGuard | Static Review</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AgentGuard | Static + Dynamic Review</title>
 <style>
 :root{--ink:#182328;--muted:#69777a;--paper:#f4f1eb;--panel:#fffefa;--line:#ded8ce;--teal:#126b68;--red:#b52d42;--orange:#c86635;--gold:#b3831f;--green:#287b5f}
 *{box-sizing:border-box}body{margin:0;color:var(--ink);font:15px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;background:radial-gradient(circle at 85% 0,#dbe9e4 0,transparent 35%),var(--paper)}
@@ -80,7 +81,7 @@ document.getElementById("scan-form").addEventListener("submit", async (event) =>
         const current = await poll.json();
         if (!poll.ok) { throw new Error(current.error || "Could not read scan status."); }
         status.textContent = "Scan status: " + current.status;
-        if (current.status === "complete") {
+        if (current.status === "complete" || current.status === "partial") {
           clearInterval(timer);
           results.innerHTML = current.html;
           button.disabled = false;
@@ -131,10 +132,16 @@ def _render(result: dict) -> str:
         cards.append(f"<article class='finding {severity}'><div class='finding-head'><span class='badge'>{_esc(severity)} · {_esc(item.get('tool'))} · {_esc(item.get('rule_id'))}</span><span class='meta'>{_esc(path)}</span></div><h4>{_esc(item.get('message') or 'Finding')}</h4><p>{_esc(item.get('description'))}</p><p class='meta'>Confidence: {_esc(item.get('confidence') if item.get('confidence') is not None else 'not provided')} · Fingerprint: <span class='fingerprint'>{_esc(item.get('fingerprint'))}</span></p><p><strong>Remediation:</strong> {_esc(item.get('remediation'))}</p>{details}</article>")
     max_count = max(severity_counts.values(), default=1)
     bars = "".join(f"<div class='barrow'><span>{_esc(level.upper())}</span><div class='track'><div class='fill {level}' style='width:{round(severity_counts.get(level,0)/max_count*100)}%'></div></div><strong>{severity_counts.get(level,0)}</strong></div>" for level in ("critical","high","medium","low","info"))
+    stages = result.get("stages", {})
+    stage_cards = "".join(
+        f"<div class='tool'><strong>{_esc(name)}</strong>: {_esc(details.get('status', 'unknown'))}"
+        f"{' · ' + _esc(details.get('reason')) if details.get('reason') else ''}</div>"
+        for name, details in stages.items() if isinstance(details, dict)
+    )
     tool_list = "".join(f"<span class='tool'>{_esc(tool)}</span>" for tool in tools) or "<span class='muted'>No scanner completed</span>"
     gate_panel = f"<section class='panel'><h3>Decision gate</h3><p><strong>{'Escalate' if gate.get('escalate') else 'Stop'}</strong></p><p class='muted'>{_esc(gate.get('reason'))}</p></section>" if gate else ""
     dynamic_panel = f"<section class='panel'><h3>Dynamic stage</h3><p><strong>Status:</strong> {_esc(dynamic.get('status'))}</p><p><strong>Monitoring tier:</strong> {_esc(dynamic.get('monitoring_tier'))}</p><p><strong>Dynamic findings:</strong> {_esc(dynamic.get('finding_count'))}</p><p class='muted'>{_esc(dynamic.get('error') or 'No dynamic error')}</p><details><summary>Runtime events</summary><div class='code'>{_esc(json.dumps(dynamic.get('events', []), indent=2))}</div></details></section>" if dynamic else ""
-    return f"<section class='overview'><div class='hero'><div class='label'>Verdict</div><h2>{_esc(max_severity)}</h2><p class='muted'>{len(findings)} normalized findings · { _esc(status) }</p></div><div class='stat'><span class='label'>Critical</span><span class='value'>{severity_counts.get('critical',0)}</span></div><div class='stat'><span class='label'>High</span><span class='value'>{severity_counts.get('high',0)}</span></div><div class='stat'><span class='label'>Medium</span><span class='value'>{severity_counts.get('medium',0)}</span></div><div class='stat'><span class='label'>Tools</span><span class='value'>{len(tools)}</span></div></section><div class='grid'><section class='panel'><h3>Findings</h3><div class='findings'>{''.join(cards) or '<p class="muted">No findings detected.</p>'}</div></section><aside>{gate_panel}{dynamic_panel}<section class='panel' style='margin-top:18px'><h3>Severity profile</h3><div class='bars'>{bars}</div></section><section class='panel' style='margin-top:18px'><h3>Scanner coverage</h3><div class='toollist'>{tool_list}</div><p class='muted'>{_esc(', '.join(f'{k}: {v}' for k,v in tool_counts.items()))}</p><p class='meta'>Fixture: {_esc(result.get('fixture_id'))}<br>Scan ID: {_esc(result.get('scan_id'))}</p></section></aside></div>"
+    return f"<section class='overview'><div class='hero'><div class='label'>Verdict</div><h2>{_esc(max_severity)}</h2><p class='muted'>{len(findings)} normalized findings · { _esc(status) }</p></div><div class='stat'><span class='label'>Critical</span><span class='value'>{severity_counts.get('critical',0)}</span></div><div class='stat'><span class='label'>High</span><span class='value'>{severity_counts.get('high',0)}</span></div><div class='stat'><span class='label'>Medium</span><span class='value'>{severity_counts.get('medium',0)}</span></div><div class='stat'><span class='label'>Tools</span><span class='value'>{len(tools)}</span></div></section><section class='panel' style='margin-top:18px'><h3>Pipeline stages</h3><div class='toollist'>{stage_cards or '<span class="muted">No stage data</span>'}</div></section><div class='grid'><section class='panel'><h3>Findings</h3><div class='findings'>{''.join(cards) or '<p class="muted">No findings detected.</p>'}</div></section><aside>{gate_panel}{dynamic_panel}<section class='panel' style='margin-top:18px'><h3>Severity profile</h3><div class='bars'>{bars}</div></section><section class='panel' style='margin-top:18px'><h3>Scanner coverage</h3><div class='toollist'>{tool_list}</div><p class='muted'>{_esc(', '.join(f'{k}: {v}' for k,v in tool_counts.items()))}</p><p class='meta'>Fixture: {_esc(result.get('fixture_id'))}<br>Scan ID: {_esc(result.get('scan_id'))}</p></section></aside></div>"
 
 
 class Handler(BaseHTTPRequestHandler):

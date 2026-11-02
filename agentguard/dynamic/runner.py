@@ -202,26 +202,26 @@ spec:
       value: {scan_id}
 {agent_env}    securityContext:
       allowPrivilegeEscalation: false
-  readOnlyRootFilesystem: true
-  runAsNonRoot: true
-  capabilities:
-    drop: ["ALL"]
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    capabilities:
+      drop: ["ALL"]
 resources:
-  requests:
-    cpu: 100m
-    memory: 128Mi
-    ephemeral-storage: 64Mi
-  limits:
-    cpu: "1"
-    memory: 512Mi
-    ephemeral-storage: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+      ephemeral-storage: 64Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+      ephemeral-storage: 512Mi
 volumeMounts:
 - name: tmp
-  mountPath: /tmp
+    mountPath: /tmp
 - name: skill
-  mountPath: /skill
+    mountPath: /skill
 - name: honeypots
-  mountPath: /honeypots
+    mountPath: /honeypots
   volumes:
   - name: tmp
 emptyDir: {{}}
