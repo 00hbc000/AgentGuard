@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 import threading
 import uuid
 from collections import Counter
@@ -14,6 +15,7 @@ from .orchestrator import scan
 
 _JOBS: dict[str, dict] = {}
 _JOBS_LOCK = threading.Lock()
+_LOGGER = logging.getLogger(__name__)
 
 
 def _validate_public_git_url(source: str) -> None:
@@ -31,7 +33,8 @@ def _run_job(job_id: str, source: str) -> None:
         _JOBS[job_id]["status"] = "running"
     try:
         result = scan(source, dynamic=True, force_dynamic=True, include_external=True).to_dict()
-    except (OSError, ValueError, RuntimeError) as exc:
+    except Exception as exc:
+        _LOGGER.exception("Background scan %s failed", job_id)
         with _JOBS_LOCK:
             _JOBS[job_id].update(status="error", error=str(exc))
         return
@@ -67,6 +70,8 @@ document.getElementById("scan-form").addEventListener("submit", async (event) =>
   const status = document.getElementById("job-status");
   const results = document.getElementById("results");
   const button = document.getElementById("submit-scan");
+  let timer;
+  let polls = 0;
   button.disabled = true;
   status.textContent = "Queueing scan...";
   results.innerHTML = "";
@@ -75,8 +80,12 @@ document.getElementById("scan-form").addEventListener("submit", async (event) =>
     const job = await response.json();
     if (!response.ok) { throw new Error(job.error || "Could not queue scan."); }
     status.textContent = "Scan queued.";
-    const timer = setInterval(async () => {
+    timer = setInterval(async () => {
       try {
+        polls += 1;
+        if (polls > 180) {
+          throw new Error("Scan timed out after 3 minutes.");
+        }
         const poll = await fetch("/api/jobs/" + job.job_id);
         const current = await poll.json();
         if (!poll.ok) { throw new Error(current.error || "Could not read scan status."); }
@@ -150,6 +159,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(payload)
 
