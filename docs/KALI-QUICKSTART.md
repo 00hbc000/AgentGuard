@@ -88,7 +88,7 @@ python -m agentguard.cli scan fixtures/combined-chain --mode quick --output runs
 echo "exit=$?"
 ```
 
-Observed here: `findings: 5`, `scan_status: complete`, `verdict: malicious`, **exit 1** (exit 1 = findings, which is normal).
+Observed here: `findings: 5`, `scan_status: complete`, `verdict: high_risk`, **exit 1** (exit 1 = findings, which is normal).
 Per engine: cisco 1, nvidia 2, agentguard 2. Counts can differ by a finding or two with other scanner versions;
 what matters is that `cisco` and `nvidia` both say `completed` in the report's `tool_runs`.
 
