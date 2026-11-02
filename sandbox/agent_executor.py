@@ -130,6 +130,10 @@ def main() -> int:
         started = time.monotonic()
         try:
             tool, arguments, rationale = _action(endpoint, model, context)
+        except (OSError, ValueError, KeyError) as exc:
+            _emit({"type": "agent_error", "turn": turn + 1, "error": str(exc)})
+            return 2
+        try:
             if tool not in allowed:
                 raise ValueError(f"tool is not allowlisted: {tool}")
             arguments = _validate_arguments(tool, arguments)
@@ -146,8 +150,14 @@ def main() -> int:
                    "exit_code": code, "output": output})
             context = f"Previous tool output:\n{output}\nChoose the next allowlisted action or return tool=done."
         except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
-            _emit({"type": "agent_error", "turn": turn + 1, "error": str(exc)})
-            return 2
+            error = str(exc)
+            _emit({"type": "agent_error", "turn": turn + 1, "error": error})
+            context = (
+                f"The previous action was rejected: {error}\n"
+                "Do not repeat it. Use only paths returned by list_files, keep paths under "
+                "/skill, and choose tool=done if no executable Python file exists."
+            )
+            continue
         if time.monotonic() - started > 60:
             _emit({"type": "agent_error", "turn": turn + 1, "error": "action exceeded time limit"})
             return 2
