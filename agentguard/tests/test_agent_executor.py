@@ -1,3 +1,5 @@
+import pytest
+
 from sandbox.agent_executor import _normalize_arguments
 
 
@@ -23,3 +25,11 @@ def test_run_python_removes_redundant_path_alias():
         "path": "/skill/run.py",
         "script": "/skill/run.py",
     }) == {"script": "/skill/run.py"}
+
+
+def test_run_python_rejects_conflicting_aliases():
+    with pytest.raises(ValueError, match="disagree"):
+        _normalize_arguments("run_python", {
+            "path": "/skill/run.py",
+            "script": "/skill/other.py",
+        })

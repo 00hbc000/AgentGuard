@@ -12,6 +12,7 @@ import urllib.request
 
 _MAX_PATH_LENGTH = 4096
 _MAX_FILE_BYTES = 64 * 1024
+_MAX_ERROR_ARGUMENT_BYTES = 2048
 _SKILL_ROOT = Path("/skill").resolve()
 
 
@@ -77,7 +78,15 @@ def _action(endpoint: str, model: str, prompt: str) -> tuple[str, dict, str]:
     if not isinstance(action, dict) or not isinstance(action.get("tool"), str) or not isinstance(action.get("arguments", {}), dict):
         raise ValueError("invalid Ollama action")
     tool = action["tool"]
-    return tool, _normalize_arguments(tool, action.get("arguments", {})), str(action.get("rationale", ""))
+    raw_arguments = action.get("arguments", {})
+    try:
+        normalized_arguments = _normalize_arguments(tool, raw_arguments)
+    except ValueError as exc:
+        details = json.dumps(raw_arguments, sort_keys=True, separators=(",", ":"))
+        raise ValueError(
+            f"{exc}; raw_arguments={details[:_MAX_ERROR_ARGUMENT_BYTES]}"
+        ) from exc
+    return tool, normalized_arguments, str(action.get("rationale", ""))
 
 
 def _tool(action: str, arguments: dict) -> tuple[int, str]:
