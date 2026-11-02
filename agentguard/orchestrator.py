@@ -114,12 +114,6 @@ def _status(findings: list[Finding], tool_runs: list[ToolRun], root: Path) -> st
         return "error"
     if any(run.status == "failed" for run in tool_runs):
         return "partial"
-    unavailable_optional = [
-        run for run in tool_runs
-        if run.status == "skipped" and run.error != "Not configured"
-    ]
-    if unavailable_optional:
-        return "partial"
     return "complete" if (root / "SKILL.md").is_file() else "incomplete"
 
 
