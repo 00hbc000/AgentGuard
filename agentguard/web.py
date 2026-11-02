@@ -54,6 +54,17 @@ def _create_job(source: str) -> str:
     return job_id
 
 
+def _job_source(handler: BaseHTTPRequestHandler, raw_body: str) -> str:
+    content_type = handler.headers.get("Content-Type", "").split(";", 1)[0].lower()
+    if content_type == "application/json":
+        payload = json.loads(raw_body)
+        return str(payload.get("source", ""))
+    fields = parse_qs(raw_body, keep_blank_values=True)
+    if fields.get("source"):
+        return fields["source"][0]
+    return parse_qs(urlparse(handler.path).query, keep_blank_values=True).get("source", [""])[0]
+
+
 _PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AgentGuard | Static + Dynamic Review</title>
 <style>
@@ -211,12 +222,9 @@ class Handler(BaseHTTPRequestHandler):
         raw_body = self.rfile.read(length).decode("utf-8")
         if self.path == "/api/jobs":
             try:
-                content_type = self.headers.get("Content-Type", "").split(";", 1)[0].lower()
-                if content_type == "application/json":
-                    payload = json.loads(raw_body)
-                    source = str(payload.get("source", ""))
-                else:
-                    source = parse_qs(raw_body).get("source", [""])[0]
+                source = _job_source(self, raw_body)
+                if not source.strip():
+                    raise ValueError("A repository URL is required.")
                 job_id = _create_job(source)
                 self._send(json.dumps({"job_id": job_id, "status": "queued"}), 202, "application/json")
             except (json.JSONDecodeError, TypeError, ValueError) as exc:
