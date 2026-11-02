@@ -19,7 +19,8 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def _validate_public_git_url(source: str) -> None:
-    parsed = urlparse(source.strip())
+    cleaned = source.strip().replace("\u200b", "").replace("\ufeff", "")
+    parsed = urlparse(cleaned)
     if parsed.scheme != "https" or parsed.hostname not in {
         "github.com", "gitlab.com", "bitbucket.org",
     }:
@@ -44,6 +45,7 @@ def _run_job(job_id: str, source: str) -> None:
 
 
 def _create_job(source: str) -> str:
+    source = source.strip().replace("\u200b", "").replace("\ufeff", "")
     _validate_public_git_url(source)
     job_id = uuid.uuid4().hex
     with _JOBS_LOCK:
