@@ -78,7 +78,7 @@ document.getElementById("scan-form").addEventListener("submit", async (event) =>
   status.textContent = "Queueing scan...";
   results.innerHTML = "";
   try {
-    const response = await fetch("/api/jobs", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({source})});
+    const response = await fetch("/api/jobs", {method:"POST", headers:{"Content-Type":"application/x-www-form-urlencoded;charset=UTF-8"}, body:new URLSearchParams({source})});
     const responseText = await response.text();
     let job;
     try {
@@ -211,8 +211,13 @@ class Handler(BaseHTTPRequestHandler):
         raw_body = self.rfile.read(length).decode("utf-8")
         if self.path == "/api/jobs":
             try:
-                payload = json.loads(raw_body)
-                job_id = _create_job(str(payload.get("source", "")))
+                content_type = self.headers.get("Content-Type", "").split(";", 1)[0].lower()
+                if content_type == "application/json":
+                    payload = json.loads(raw_body)
+                    source = str(payload.get("source", ""))
+                else:
+                    source = parse_qs(raw_body).get("source", [""])[0]
+                job_id = _create_job(source)
                 self._send(json.dumps({"job_id": job_id, "status": "queued"}), 202, "application/json")
             except (json.JSONDecodeError, TypeError, ValueError) as exc:
                 self._send(json.dumps({"error": str(exc)}), 400, "application/json")
