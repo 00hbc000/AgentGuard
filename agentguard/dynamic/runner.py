@@ -8,6 +8,7 @@ import subprocess
 import tarfile
 import time
 import uuid
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 
@@ -101,6 +102,52 @@ def _monitoring_tier() -> str:
     return "tetragon" if probe.returncode == 0 and probe.stdout.strip() else "fallback"
 
 
+def _start_tetragon_stream(since: datetime) -> subprocess.Popen[str] | None:
+    if _monitoring_tier() != "tetragon":
+        return None
+    try:
+        return subprocess.Popen(
+            ["kubectl", "-n", "kube-system", "logs", "-l",
+             "app.kubernetes.io/name=tetragon", "--all-containers=true",
+             "--since-time", since.isoformat(), "--follow"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+    except OSError:
+        return None
+
+
+def _event_contains_pod(value: object, pod: str) -> bool:
+    if isinstance(value, dict):
+        return any(_event_contains_pod(item, pod) for item in value.values())
+    if isinstance(value, list):
+        return any(_event_contains_pod(item, pod) for item in value)
+    return value == pod
+
+
+def _finish_tetragon_stream(process: subprocess.Popen[str] | None, pod: str) -> list[dict]:
+    if process is None:
+        return []
+    try:
+        process.terminate()
+        stdout, _ = process.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        stdout, _ = process.communicate(timeout=5)
+    events = []
+    for line in stdout.splitlines():
+        if not line.lstrip().startswith("{"):
+            line = line[line.find("{"):] if "{" in line else ""
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict) and _event_contains_pod(event, pod):
+            events.append({"type": "tetragon", "pod": pod, "event": event})
+    return events
+
+
 def _run_probe(pod: str, target: str, timeout: int = 20) -> tuple[bool, str]:
     result = _run(["kubectl", "-n", "agentguard-sandbox", "exec", pod, "--", "python", "-c", target], timeout=timeout)
     return result.returncode == 0, (result.stdout + result.stderr).strip()
@@ -166,8 +213,11 @@ def _copy_skill(root: Path, pod: str) -> None:
         raise DynamicUnavailable(f"Copying skill into sandbox failed: {detail or 'no diagnostic output'}")
 
 
-def _events_from_logs() -> list[dict]:
-    logs = _run(["kubectl", "-n", "agentguard-sandbox", "logs", "deployment/agentguard-sink"], timeout=30)
+def _events_from_logs(since: datetime) -> list[dict]:
+    logs = _run([
+        "kubectl", "-n", "agentguard-sandbox", "logs", "deployment/agentguard-sink",
+        "--since-time", since.isoformat(),
+    ], timeout=30)
     events = []
     for line in logs.stdout.splitlines():
         try:
@@ -203,7 +253,8 @@ def run(root: Path) -> DynamicResult:
     pod = f"agentguard-run-{uuid.uuid4().hex[:8]}"
     _build_images(cluster)
     _apply_manifests()
-    tier = _monitoring_tier()
+    scan_started = datetime.now(timezone.utc)
+    tetragon_stream = _start_tetragon_stream(scan_started)
     try:
         _create_pod(pod)
         _check(_run(["kubectl", "-n", namespace, "exec", pod, "--", "mkdir", "-p", "/skill", "/honeypots"], timeout=30), "Preparing sandbox")
@@ -229,14 +280,17 @@ def run(root: Path) -> DynamicResult:
             )
         prepare = _run(["kubectl", "-n", namespace, "exec", pod, "--", "python", "/opt/agentguard/run_skill.py", "--phase", "prepare"], timeout=60)
         if prepare.returncode:
-            return DynamicResult("error", tier, events=[{"type": "prepare_error", "stderr": prepare.stderr}], error="Sandbox preparation failed")
+            return DynamicResult("error", "fallback", events=[{"type": "prepare_error", "stderr": prepare.stderr}], error="Sandbox preparation failed")
         command = os.environ.get("AGENTGUARD_ENTRYPOINT", "")
         args = ["python", "/opt/agentguard/run_skill.py", "--phase", "execute"]
         if command:
             args.extend(["--command", command])
         execute = _run(["kubectl", "-n", namespace, "exec", pod, "--", *args], timeout=int(os.environ.get("AGENTGUARD_DYNAMIC_TIMEOUT", "120")))
-        events = _events_from_logs()
+        tetragon_events = _finish_tetragon_stream(tetragon_stream, pod)
+        tetragon_stream = None
+        events = _events_from_logs(scan_started)
         events.extend(_events_from_pod(pod))
+        events.extend(tetragon_events)
         trace = _run(["kubectl", "-n", namespace, "exec", pod, "--", "cat", "/tmp/agentguard-trace"], timeout=30)
         trace_text = trace.stdout
         if "/honeypots/aws-credentials" in trace_text and events:
@@ -245,12 +299,17 @@ def run(root: Path) -> DynamicResult:
                 "honeypot_hit": True,
                 "path": "/honeypots/aws-credentials",
                 "destination": "agentguard-sink",
-                "monitoring_tier": tier,
+                "monitoring_tier": "tetragon" if tetragon_events else "fallback",
             })
         if execute.returncode:
             events.append({"type": "execution_error", "exit_code": execute.returncode, "stderr": execute.stderr[-2000:]})
+        tier = "tetragon" if tetragon_events else "fallback"
+        if _monitoring_tier() == "tetragon" and not tetragon_events:
+            events.append({"type": "tetragon_unavailable", "pod": pod})
         return collect_events(events, monitoring_tier=tier)
     finally:
+        if tetragon_stream is not None:
+            _finish_tetragon_stream(tetragon_stream, pod)
         _run(["kubectl", "-n", namespace, "delete", "pod", pod, "--ignore-not-found=true", "--wait=false"], timeout=30)
 
 

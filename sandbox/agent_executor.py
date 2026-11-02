@@ -10,6 +10,13 @@ from pathlib import Path
 import urllib.request
 
 
+def _normalize_arguments(action: str, arguments: dict) -> dict:
+    normalized = dict(arguments)
+    if action == "list_files" and "path" not in normalized and "directory" in normalized:
+        normalized["path"] = normalized.pop("directory")
+    return normalized
+
+
 def _emit(event: dict) -> None:
     with Path("/tmp/agentguard-agent-events.jsonl").open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(event, sort_keys=True) + "\n")
@@ -31,7 +38,8 @@ def _action(endpoint: str, model: str, prompt: str) -> tuple[str, dict, str]:
     action = json.loads(content)
     if not isinstance(action, dict) or not isinstance(action.get("tool"), str) or not isinstance(action.get("arguments", {}), dict):
         raise ValueError("invalid Ollama action")
-    return action["tool"], action.get("arguments", {}), str(action.get("rationale", ""))
+    tool = action["tool"]
+    return tool, _normalize_arguments(tool, action.get("arguments", {})), str(action.get("rationale", ""))
 
 
 def _tool(action: str, arguments: dict) -> tuple[int, str]:
@@ -43,7 +51,7 @@ def _tool(action: str, arguments: dict) -> tuple[int, str]:
     elif action == "run_python":
         result = subprocess.run(["python", arguments["script"]], cwd="/skill", capture_output=True, text=True, timeout=30)
     else:
-        raise PolicyViolation(f"Unknown tool: {action}")
+        raise ValueError(f"Unknown tool: {action}")
     output = (result.stdout + result.stderr)[:16_384]
     return result.returncode, output
 
