@@ -2,12 +2,50 @@ from __future__ import annotations
 
 import html
 import json
+import threading
+import uuid
 from collections import Counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from .orchestrator import scan
+
+
+_JOBS: dict[str, dict] = {}
+_JOBS_LOCK = threading.Lock()
+
+
+def _validate_public_git_url(source: str) -> None:
+    parsed = urlparse(source.strip())
+    if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() not in {
+        "github.com", "gitlab.com", "bitbucket.org",
+    }:
+        raise ValueError("Only public GitHub, GitLab, and Bitbucket HTTPS URLs are accepted.")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("Repository URLs must not contain credentials, query strings, or fragments.")
+
+
+def _run_job(job_id: str, source: str) -> None:
+    with _JOBS_LOCK:
+        _JOBS[job_id]["status"] = "running"
+    try:
+        result = scan(source, dynamic=True, include_external=False).to_dict()
+    except (OSError, ValueError, RuntimeError) as exc:
+        with _JOBS_LOCK:
+            _JOBS[job_id].update(status="error", error=str(exc))
+        return
+    with _JOBS_LOCK:
+        _JOBS[job_id].update(status="complete", result=result)
+
+
+def _create_job(source: str) -> str:
+    _validate_public_git_url(source)
+    job_id = uuid.uuid4().hex
+    with _JOBS_LOCK:
+        _JOBS[job_id] = {"job_id": job_id, "status": "queued", "source": source}
+    threading.Thread(target=_run_job, args=(job_id, source), daemon=True).start()
+    return job_id
 
 
 _PAGE = """<!doctype html>
@@ -21,7 +59,31 @@ form{display:flex;gap:10px;margin:28px 0 20px;background:var(--panel);border:1px
 .grid{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(280px,.7fr);gap:18px;margin-top:18px}.panel{padding:21px}.panel h3{margin:0 0 15px;font:800 22px Georgia,serif}.bars{display:grid;gap:10px}.barrow{display:grid;grid-template-columns:88px 1fr 35px;gap:10px;align-items:center;font-size:13px}.track{height:9px;background:#e7e1d6;border-radius:99px;overflow:hidden}.fill{height:100%;border-radius:99px}.critical{--accent:var(--red)}.high{--accent:var(--orange)}.medium{--accent:var(--gold)}.low{--accent:var(--green)}.info{--accent:#728186}.fill{background:var(--accent)}
 .findings{display:grid;gap:12px}.finding{border:1px solid var(--line);border-left:6px solid var(--accent);border-radius:9px;padding:16px;background:#fff}.finding-head{display:flex;justify-content:space-between;gap:16px;align-items:start;flex-wrap:wrap}.badge{color:var(--accent);font-weight:900;font-size:12px;letter-spacing:.08em;word-break:break-word}.finding h4{margin:8px 0;font-size:17px}.finding p{margin:7px 0}.meta{font:12px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted)}details{margin-top:12px;border-top:1px dashed var(--line);padding-top:10px}summary{cursor:pointer;color:var(--teal);font-weight:800;padding:3px 0}.code{white-space:pre-wrap;background:#f5f2ec;border-radius:6px;padding:10px;margin-top:8px;font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;overflow:auto}.fingerprint{word-break:break-all}.toollist{display:flex;flex-wrap:wrap;gap:8px}.tool{background:#edf1ef;border:1px solid #d5dfda;border-radius:999px;padding:6px 10px;font-size:12px;font-weight:800}.error{background:#fff0f1;border:1px solid #e5aab2;color:#8e1e31;padding:14px;border-radius:9px;margin-top:20px;white-space:pre-wrap}
 @media(max-width:900px){.overview{grid-template-columns:repeat(2,1fr)}.hero{grid-column:span 2}.grid{grid-template-columns:1fr}.mast{align-items:start;flex-direction:column}}@media(max-width:550px){.shell{padding:25px 14px}.overview{display:grid;grid-template-columns:1fr 1fr}form{flex-direction:column}button{height:45px}.hero{grid-column:span 2}}
-</style></head><body><main class="shell"><header class="mast"><div><div class="eyebrow">Static + dynamic security review</div><h1>AgentGuard</h1><p class="muted">Static evidence, decision-gate routing, and sandbox observations in one view.</p></div><div class="trust">Sandbox never runs on the host</div></header><form method="post"><input name="source" value="{source}" placeholder="Local skill directory, archive, or GitHub URL" required><label><input type="checkbox" name="dynamic" {dynamic_checked}> Gate + dynamic</label><label><input type="checkbox" name="force_dynamic" {force_checked}> Force dynamic</label><label><input type="checkbox" name="demo_dynamic" {demo_checked}> Synthetic demo</label><button type="submit">Run scan</button></form>{content}</main></body></html>"""
+</style></head><body><main class="shell"><header class="mast"><div><div class="eyebrow">Static + dynamic security review</div><h1>AgentGuard</h1><p class="muted">Static evidence, decision-gate routing, and sandbox observations in one view.</p></div><div class="trust">Sandbox never runs on the host</div></header><form id="scan-form"><input id="source" name="source" placeholder="Public GitHub, GitLab, or Bitbucket URL" required><button type="submit">Run scan</button></form><p id="job-status" class="muted">Static scanning runs first; ambiguous results are routed to the isolated dynamic sandbox.</p><div id="results"></div>{content}</main><script>
+document.getElementById("scan-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const source = document.getElementById("source").value;
+  const status = document.getElementById("job-status");
+  const results = document.getElementById("results");
+  status.textContent = "Queueing scan...";
+  results.innerHTML = "";
+  const response = await fetch("/api/jobs", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({source})});
+  const job = await response.json();
+  if (!response.ok) { status.textContent = job.error || "Could not queue scan."; return; }
+  status.textContent = "Scan queued.";
+  const timer = setInterval(async () => {
+    const current = await (await fetch("/api/jobs/" + job.job_id)).json();
+    status.textContent = "Scan status: " + current.status;
+    if (current.status === "complete") {
+      clearInterval(timer);
+      results.innerHTML = current.html;
+    } else if (current.status === "error") {
+      clearInterval(timer);
+      status.textContent = current.error || "Scan failed.";
+    }
+  }, 1000);
+});
+</script></body></html>"""
 
 
 def _esc(value: object) -> str:
@@ -70,6 +132,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/jobs/"):
+            job_id = parsed.path.rsplit("/", 1)[-1]
+            with _JOBS_LOCK:
+                job = dict(_JOBS.get(job_id, {}))
+            if not job:
+                self._send(json.dumps({"error": "Unknown scan job"}), 404, "application/json")
+                return
+            if job.get("status") == "complete":
+                job["html"] = _render(job["result"])
+                job.pop("result", None)
+            self._send(json.dumps(job), content_type="application/json")
+            return
         if parsed.path == "/api/scan":
             source = parse_qs(parsed.query).get("source", [""])[0]
             try:
@@ -87,7 +161,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
-        fields = parse_qs(self.rfile.read(length).decode("utf-8"))
+        raw_body = self.rfile.read(length).decode("utf-8")
+        if self.path == "/api/jobs":
+            try:
+                payload = json.loads(raw_body)
+                job_id = _create_job(str(payload.get("source", "")))
+                self._send(json.dumps({"job_id": job_id, "status": "queued"}), 202, "application/json")
+            except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                self._send(json.dumps({"error": str(exc)}), 400, "application/json")
+            return
+        fields = parse_qs(raw_body)
         source = fields.get("source", [""])[0]
         try:
             result = scan(
