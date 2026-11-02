@@ -10,3 +10,9 @@ def test_list_files_accepts_model_directory_alias():
 def test_other_tools_do_not_change_arguments():
     arguments = {"script": "/skill/run.py"}
     assert _normalize_arguments("run_python", arguments) == arguments
+
+
+def test_run_python_accepts_model_path_alias():
+    assert _normalize_arguments("run_python", {"path": "/skill/run.py"}) == {
+        "script": "/skill/run.py",
+    }

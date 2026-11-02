@@ -28,6 +28,8 @@ def _normalize_arguments(action: str, arguments: dict) -> dict:
     normalized = dict(arguments)
     if action == "list_files" and "path" not in normalized and "directory" in normalized:
         normalized["path"] = normalized.pop("directory")
+    if action == "run_python" and "script" not in normalized and "path" in normalized:
+        normalized["script"] = normalized.pop("path")
     allowed = {
         "list_files": {"path"},
         "read_file": {"path"},
