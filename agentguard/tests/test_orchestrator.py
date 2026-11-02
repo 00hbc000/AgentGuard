@@ -34,6 +34,17 @@ def test_result_can_be_serialized(tmp_path):
     assert payload["scan_status"] == "complete"
 
 
+def test_scan_modes_record_static_and_sandbox_paths(tmp_path):
+    fixture = tmp_path / "safe"
+    fixture.mkdir()
+    (fixture / "SKILL.md").write_text("---\nname: x\ndescription: x\n---\n", encoding="utf-8")
+    quick = scan(str(fixture), include_external=False, scan_mode="quick")
+    assert quick.stages["mode"]["status"] == "quick"
+    sandbox = scan(str(fixture), include_external=False, scan_mode="sandbox")
+    assert sandbox.stages["mode"]["status"] == "sandbox"
+    assert sandbox.gate is not None
+
+
 def test_unconfigured_external_tools_do_not_mark_native_scan_incomplete(tmp_path, monkeypatch):
     fixture = tmp_path / "safe"
     fixture.mkdir()

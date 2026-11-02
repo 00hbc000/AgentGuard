@@ -119,7 +119,13 @@ def _status(findings: list[Finding], tool_runs: list[ToolRun], root: Path) -> st
 
 def scan(source: str, *, workspace_base: Path | None = None, include_external: bool = True,
          output_dir: Path | None = None, dynamic: bool = False,
-         force_dynamic: bool = False, demo_dynamic: bool = False) -> ScanResult:
+         force_dynamic: bool = False, demo_dynamic: bool = False,
+         scan_mode: str | None = None) -> ScanResult:
+    if scan_mode is not None:
+        if scan_mode not in {"quick", "sandbox", "deep"}:
+            raise ValueError("scan_mode must be quick, sandbox, or deep")
+        dynamic = scan_mode in {"sandbox", "deep"}
+        force_dynamic = scan_mode in {"sandbox", "deep"}
     scan_id = str(uuid.uuid4())
     created_at = datetime.now(timezone.utc).isoformat()
     base = workspace_base or Path(tempfile.mkdtemp(prefix="agentguard-run-"))
@@ -147,6 +153,7 @@ def scan(source: str, *, workspace_base: Path | None = None, include_external: b
     gate_payload = None
     dynamic_payload = None
     stages = {
+        "mode": {"status": scan_mode or ("sandbox" if force_dynamic else "quick")},
         "ingestion": {"status": "complete", "details": ingestion},
         "native": {"status": "complete"},
         "cisco": {"status": next((run.status for run in tool_runs if run.tool == "cisco"), "not_requested")},

@@ -33,7 +33,7 @@ def _run_job(job_id: str, source: str) -> None:
     with _JOBS_LOCK:
         _JOBS[job_id]["status"] = "running"
     try:
-        result = scan(source, dynamic=True, force_dynamic=True, include_external=True).to_dict()
+        result = scan(source, scan_mode="sandbox", include_external=True).to_dict()
     except Exception as exc:
         _LOGGER.exception("Background scan %s failed", job_id)
         with _JOBS_LOCK:
@@ -73,10 +73,10 @@ _PAGE = """<!doctype html>
 .shell{max-width:1240px;margin:auto;padding:38px 24px 70px}.mast{display:flex;justify-content:space-between;gap:20px;align-items:end;border-bottom:1px solid var(--line);padding-bottom:25px}.eyebrow{color:var(--teal);font-weight:800;letter-spacing:.12em;text-transform:uppercase;font-size:11px}.mast h1{font:800 clamp(32px,5vw,62px)/.95 Georgia,serif;margin:10px 0 0;letter-spacing:-.03em}.muted{color:var(--muted)}.trust{font-size:12px;color:var(--teal);border:1px solid #a9ccc4;background:#eaf5f1;border-radius:999px;padding:7px 11px;white-space:nowrap}
 form{display:flex;gap:10px;margin:28px 0 20px;background:var(--panel);border:1px solid var(--line);padding:10px;border-radius:12px;box-shadow:0 8px 25px #75684b12}input{min-width:0;flex:1;border:0;background:transparent;padding:13px;font:inherit;outline:0}button{border:0;border-radius:8px;background:var(--teal);color:white;font-weight:800;padding:0 20px;cursor:pointer}button:hover{background:#0d504e}
 .overview{display:grid;grid-template-columns:1.4fr repeat(4,1fr);gap:12px;margin-top:22px}.hero,.stat,.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px}.hero{padding:22px}.hero h2{font:800 30px/1 Georgia,serif;margin:7px 0}.hero p{margin:5px 0}.stat{padding:17px}.stat .value{display:block;font:800 30px Georgia,serif;margin-top:6px}.label{font-size:11px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
-.grid{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(280px,.7fr);gap:18px;margin-top:18px}.panel{padding:21px}.panel h3{margin:0 0 15px;font:800 22px Georgia,serif}.bars{display:grid;gap:10px}.barrow{display:grid;grid-template-columns:88px 1fr 35px;gap:10px;align-items:center;font-size:13px}.track{height:9px;background:#e7e1d6;border-radius:99px;overflow:hidden}.fill{height:100%;border-radius:99px}.critical{--accent:var(--red)}.high{--accent:var(--orange)}.medium{--accent:var(--gold)}.low{--accent:var(--green)}.info{--accent:#728186}.fill{background:var(--accent)}
+.grid{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(280px,.7fr);gap:18px;margin-top:18px}.panel{padding:21px}.panel h3{margin:0 0 15px;font:800 22px Georgia,serif}.modes{display:flex;gap:8px;flex-wrap:wrap;padding:6px 0 2px}.mode{display:flex;align-items:center;gap:7px;border:1px solid var(--line);border-radius:8px;padding:8px 11px;background:#faf8f3;font-size:13px}.mode:has(input:checked){border-color:var(--teal);background:#eaf5f1;color:var(--teal);font-weight:800}.mode input{flex:0 0 auto;min-width:0}.bars{display:grid;gap:10px}.barrow{display:grid;grid-template-columns:88px 1fr 35px;gap:10px;align-items:center;font-size:13px}.track{height:9px;background:#e7e1d6;border-radius:99px;overflow:hidden}.fill{height:100%;border-radius:99px}.critical{--accent:var(--red)}.high{--accent:var(--orange)}.medium{--accent:var(--gold)}.low{--accent:var(--green)}.info{--accent:#728186}.fill{background:var(--accent)}
 .findings{display:grid;gap:12px}.finding{border:1px solid var(--line);border-left:6px solid var(--accent);border-radius:9px;padding:16px;background:#fff}.finding-head{display:flex;justify-content:space-between;gap:16px;align-items:start;flex-wrap:wrap}.badge{color:var(--accent);font-weight:900;font-size:12px;letter-spacing:.08em;word-break:break-word}.finding h4{margin:8px 0;font-size:17px}.finding p{margin:7px 0}.meta{font:12px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--muted)}details{margin-top:12px;border-top:1px dashed var(--line);padding-top:10px}summary{cursor:pointer;color:var(--teal);font-weight:800;padding:3px 0}.code{white-space:pre-wrap;background:#f5f2ec;border-radius:6px;padding:10px;margin-top:8px;font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;overflow:auto}.fingerprint{word-break:break-all}.toollist{display:flex;flex-wrap:wrap;gap:8px}.tool{background:#edf1ef;border:1px solid #d5dfda;border-radius:999px;padding:6px 10px;font-size:12px;font-weight:800}.error{background:#fff0f1;border:1px solid #e5aab2;color:#8e1e31;padding:14px;border-radius:9px;margin-top:20px;white-space:pre-wrap}
 @media(max-width:900px){.overview{grid-template-columns:repeat(2,1fr)}.hero{grid-column:span 2}.grid{grid-template-columns:1fr}.mast{align-items:start;flex-direction:column}}@media(max-width:550px){.shell{padding:25px 14px}.overview{display:grid;grid-template-columns:1fr 1fr}form{flex-direction:column}button{height:45px}.hero{grid-column:span 2}}
-</style></head><body><main class="shell"><header class="mast"><div><div class="eyebrow">Static + dynamic security review</div><h1>AgentGuard</h1><p class="muted">Static evidence, decision-gate routing, and sandbox observations in one view.</p></div><div class="trust">Skill code runs in isolated Kubernetes</div></header><form id="scan-form" method="post" action="/"><input id="source" name="source" placeholder="Public GitHub, GitLab, or Bitbucket URL" required><input type="hidden" name="dynamic" value="1"><input type="hidden" name="force_dynamic" value="1"><button id="submit-scan" type="submit">Run scan</button></form><p id="job-status" class="muted">Static and dynamic scanning will run after submission.</p><div id="results"></div>{content}</main><script>
+</style></head><body><main class="shell"><header class="mast"><div><div class="eyebrow">Static + dynamic security review</div><h1>AgentGuard</h1><p class="muted">Static evidence, decision-gate routing, and sandbox observations in one view.</p></div><div class="trust">Skill code runs in isolated Kubernetes</div></header><form id="scan-form" method="post" action="/"><input id="source" name="source" placeholder="Public GitHub, GitLab, or Bitbucket URL" required><div class="modes" aria-label="Scan mode"><label class="mode"><input type="radio" name="scan_mode" value="quick" {quick_checked}>Quick Scan</label><label class="mode"><input type="radio" name="scan_mode" value="sandbox" {sandbox_checked}>Sandbox Scan</label><label class="mode"><input type="radio" name="scan_mode" value="deep" {deep_checked}>Deep Trace</label></div><button id="submit-scan" type="submit">Run scan</button></form><p id="job-status" class="muted">Quick Scan checks static evidence. Sandbox and Deep Trace execute inside Kubernetes.</p><div id="results"></div>{content}</main><script>
 document.getElementById("scan-form").addEventListener("submit", () => {
   document.getElementById("submit-scan").disabled = true;
   document.getElementById("job-status").textContent = "Starting scan...";
@@ -146,6 +146,18 @@ def _esc(value: object) -> str:
     return html.escape(str(value or ""))
 
 
+def _page(template: str, *, source: str = "", content: str = "", scan_mode: str = "quick") -> str:
+    return (template
+            .replace("{source}", _esc(source))
+            .replace("{content}", content)
+            .replace("{quick_checked}", "checked" if scan_mode == "quick" else "")
+            .replace("{sandbox_checked}", "checked" if scan_mode == "sandbox" else "")
+            .replace("{deep_checked}", "checked" if scan_mode == "deep" else "")
+            .replace("{dynamic_checked}", "")
+            .replace("{force_checked}", "")
+            .replace("{demo_checked}", ""))
+
+
 def _render(result: dict) -> str:
     findings = result.get("findings", [])
     severity_counts = Counter(str(item.get("severity", "INFO")).lower() for item in findings)
@@ -155,6 +167,7 @@ def _render(result: dict) -> str:
     tools = result.get("tools_used", [])
     gate = result.get("decision_gate")
     dynamic = result.get("dynamic")
+    mode = result.get("stages", {}).get("mode", {}).get("status", "quick")
     cards = []
     for item in findings:
         severity = str(item.get("severity", "INFO")).lower()
@@ -180,7 +193,7 @@ def _render(result: dict) -> str:
     tool_list = "".join(f"<span class='tool'>{_esc(tool)}</span>" for tool in tools) or "<span class='muted'>No scanner completed</span>"
     gate_panel = f"<section class='panel'><h3>Decision gate</h3><p><strong>{'Escalate' if gate.get('escalate') else 'Stop'}</strong></p><p class='muted'>{_esc(gate.get('reason'))}</p></section>" if gate else ""
     dynamic_panel = f"<section class='panel'><h3>Dynamic stage</h3><p><strong>Status:</strong> {_esc(dynamic.get('status'))}</p><p><strong>Monitoring tier:</strong> {_esc(dynamic.get('monitoring_tier'))}</p><p><strong>Dynamic findings:</strong> {_esc(dynamic.get('finding_count'))}</p><p class='muted'>{_esc(dynamic.get('error') or 'No dynamic error')}</p><details><summary>Runtime events</summary><div class='code'>{_esc(json.dumps(dynamic.get('events', []), indent=2))}</div></details></section>" if dynamic else ""
-    return f"<section class='overview'><div class='hero'><div class='label'>Verdict</div><h2>{_esc(max_severity)}</h2><p class='muted'>{len(findings)} normalized findings · { _esc(status) }</p></div><div class='stat'><span class='label'>Critical</span><span class='value'>{severity_counts.get('critical',0)}</span></div><div class='stat'><span class='label'>High</span><span class='value'>{severity_counts.get('high',0)}</span></div><div class='stat'><span class='label'>Medium</span><span class='value'>{severity_counts.get('medium',0)}</span></div><div class='stat'><span class='label'>Tools</span><span class='value'>{len(tools)}</span></div></section><section class='panel' style='margin-top:18px'><h3>Pipeline stages</h3><div class='toollist'>{stage_cards or '<span class="muted">No stage data</span>'}</div></section><div class='grid'><section class='panel'><h3>Findings</h3><div class='findings'>{''.join(cards) or '<p class="muted">No findings detected.</p>'}</div></section><aside>{gate_panel}{dynamic_panel}<section class='panel' style='margin-top:18px'><h3>Severity profile</h3><div class='bars'>{bars}</div></section><section class='panel' style='margin-top:18px'><h3>Scanner coverage</h3><div class='toollist'>{tool_list}</div><p class='muted'>{_esc(', '.join(f'{k}: {v}' for k,v in tool_counts.items()))}</p><p class='meta'>Fixture: {_esc(result.get('fixture_id'))}<br>Scan ID: {_esc(result.get('scan_id'))}</p></section></aside></div>"
+    return f"<section class='overview'><div class='hero'><div class='label'>Verdict · {_esc(mode)}</div><h2>{_esc(max_severity)}</h2><p class='muted'>{len(findings)} normalized findings · { _esc(status) }</p></div><div class='stat'><span class='label'>Critical</span><span class='value'>{severity_counts.get('critical',0)}</span></div><div class='stat'><span class='label'>High</span><span class='value'>{severity_counts.get('high',0)}</span></div><div class='stat'><span class='label'>Medium</span><span class='value'>{severity_counts.get('medium',0)}</span></div><div class='stat'><span class='label'>Tools</span><span class='value'>{len(tools)}</span></div></section><section class='panel' style='margin-top:18px'><h3>Pipeline stages</h3><div class='toollist'>{stage_cards or '<span class="muted">No stage data</span>'}</div></section><div class='grid'><section class='panel'><h3>Findings</h3><div class='findings'>{''.join(cards) or '<p class="muted">No findings detected.</p>'}</div></section><aside>{gate_panel}{dynamic_panel}<section class='panel' style='margin-top:18px'><h3>Severity profile</h3><div class='bars'>{bars}</div></section><section class='panel' style='margin-top:18px'><h3>Scanner coverage</h3><div class='toollist'>{tool_list}</div><p class='muted'>{_esc(', '.join(f'{k}: {v}' for k,v in tool_counts.items()))}</p><p class='meta'>Fixture: {_esc(result.get('fixture_id'))}<br>Scan ID: {_esc(result.get('scan_id'))}</p></section></aside></div>"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -216,6 +229,7 @@ class Handler(BaseHTTPRequestHandler):
                 query = parse_qs(parsed.query)
                 self._send(json.dumps(scan(
                     source,
+                    scan_mode=query.get("scan_mode", ["quick"])[0],
                     dynamic=query.get("dynamic", ["0"])[0] == "1",
                     force_dynamic=query.get("force_dynamic", ["0"])[0] == "1",
                     demo_dynamic=query.get("demo_dynamic", ["0"])[0] == "1",
@@ -223,7 +237,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send(json.dumps({"error": str(exc)}), 400, "application/json")
             return
-        self._send(_PAGE.replace("{source}", "").replace("{content}", "<p class='muted'>Enter a local path or GitHub URL to begin.</p>").replace("{dynamic_checked}", "").replace("{force_checked}", "").replace("{demo_checked}", ""))
+        self._send(_page(_PAGE, content="<p class='muted'>Enter a repository URL to begin.</p>"))
 
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
@@ -240,17 +254,16 @@ class Handler(BaseHTTPRequestHandler):
             return
         fields = parse_qs(raw_body)
         source = fields.get("source", [""])[0]
+        scan_mode = fields.get("scan_mode", ["quick"])[0]
         try:
             result = scan(
                 source,
+                scan_mode=scan_mode,
                 dynamic="dynamic" in fields,
                 force_dynamic="force_dynamic" in fields,
                 demo_dynamic="demo_dynamic" in fields,
             ).to_dict()
-            page = _PAGE.replace("{source}", _esc(source)).replace("{content}", _render(result))
-            page = page.replace("{dynamic_checked}", "checked" if "dynamic" in fields else "")
-            page = page.replace("{force_checked}", "checked" if "force_dynamic" in fields else "")
-            page = page.replace("{demo_checked}", "checked" if "demo_dynamic" in fields else "")
+            page = _page(_PAGE, source=source, content=_render(result), scan_mode=scan_mode)
             self._send(page)
         except Exception as exc:
             page = _PAGE.replace("{source}", _esc(source)).replace("{content}", f"<div class='error'>{_esc(exc)}</div>")

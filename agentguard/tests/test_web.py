@@ -1,4 +1,4 @@
-from agentguard.web import _render
+from agentguard.web import _page, _render
 from agentguard.web import _PAGE
 
 
@@ -21,6 +21,14 @@ def test_web_renders_gate_and_dynamic_tier():
     assert "honeypot_exfiltration" in page
 
 
-def test_web_form_always_requests_dynamic_analysis():
-    assert 'name="dynamic" value="1"' in _PAGE
-    assert 'name="force_dynamic" value="1"' in _PAGE
+def test_web_form_offers_skillward_style_scan_modes():
+    assert 'value="quick"' in _PAGE
+    assert 'value="sandbox"' in _PAGE
+    assert 'value="deep"' in _PAGE
+    assert 'Sandbox and Deep Trace execute inside Kubernetes.' in _PAGE
+
+
+def test_web_page_marks_selected_scan_mode():
+    page = _page(_PAGE, scan_mode="sandbox")
+    assert 'value="sandbox" checked' in page
+    assert 'value="quick" checked' not in page
