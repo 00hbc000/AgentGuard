@@ -172,7 +172,7 @@ class Handler(BaseHTTPRequestHandler):
             if not job:
                 self._send(json.dumps({"error": "Unknown scan job"}), 404, "application/json")
                 return
-            if job.get("status") == "complete":
+            if job.get("status") in {"complete", "partial"} and "result" in job:
                 job["html"] = _render(job["result"])
                 job.pop("result", None)
             self._send(json.dumps(job), content_type="application/json")

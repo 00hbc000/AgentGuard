@@ -168,7 +168,7 @@ def scan(source: str, *, workspace_base: Path | None = None, include_external: b
                 dynamic_payload = dynamic_result.to_dict()
                 stages["dynamic"] = {"status": "complete"}
                 status = "partial" if status == "partial" else "complete"
-            except DynamicUnavailable as exc:
+            except Exception as exc:
                 dynamic_payload = {
                     "status": "error",
                     "monitoring_tier": monitoring_tier(),
