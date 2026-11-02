@@ -77,7 +77,13 @@ document.getElementById("scan-form").addEventListener("submit", async (event) =>
   results.innerHTML = "";
   try {
     const response = await fetch("/api/jobs", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({source})});
-    const job = await response.json();
+    const responseText = await response.text();
+    let job;
+    try {
+      job = JSON.parse(responseText);
+    } catch (parseError) {
+      throw new Error("Queue request returned HTTP " + response.status + " instead of JSON: " + responseText.slice(0, 300));
+    }
     if (!response.ok) { throw new Error(job.error || "Could not queue scan."); }
     status.textContent = "Scan queued.";
     timer = setInterval(async () => {
@@ -87,7 +93,13 @@ document.getElementById("scan-form").addEventListener("submit", async (event) =>
           throw new Error("Scan timed out after 3 minutes.");
         }
         const poll = await fetch("/api/jobs/" + job.job_id);
-        const current = await poll.json();
+        const pollText = await poll.text();
+        let current;
+        try {
+          current = JSON.parse(pollText);
+        } catch (parseError) {
+          throw new Error("Status request returned HTTP " + poll.status + " instead of JSON: " + pollText.slice(0, 300));
+        }
         if (!poll.ok) { throw new Error(current.error || "Could not read scan status."); }
         status.textContent = "Scan status: " + current.status;
         if (current.status === "complete" || current.status === "partial") {
