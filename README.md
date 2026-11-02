@@ -95,7 +95,7 @@ configured. See
 For a complete Kali smoke test after rebuilding images:
 
 ```bash
-./scripts/kali_demo_verify.sh \
+bash ./scripts/kali_demo_verify.sh \
   https://github.com/trailofbits/overtly-malicious-skills/tree/main/skills/csv-summarizer
 ```
 

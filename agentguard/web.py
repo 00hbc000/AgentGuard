@@ -186,12 +186,15 @@ def _render(result: dict) -> str:
 class Handler(BaseHTTPRequestHandler):
     def _send(self, body: str, status: int = 200, content_type: str = "text/html; charset=utf-8") -> None:
         payload = body.encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(payload)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(payload)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(payload)
+        except BrokenPipeError:
+            _LOGGER.info("Browser disconnected before the scan response was delivered")
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)

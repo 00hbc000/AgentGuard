@@ -20,7 +20,7 @@ python -m agentguard.cli scan "$source" \
   --force-dynamic \
   --output "$output"
 
-report="$(find "$output" -maxdepth 1 -name '*.json' ! -name '*.meta.json' -print -quit)"
+report="$(find "$output" -maxdepth 1 -name '*.json' ! -name '*.meta.json' -print | sort | head -n 1)"
 test -n "$report"
 python - "$report" <<'PY'
 import json
