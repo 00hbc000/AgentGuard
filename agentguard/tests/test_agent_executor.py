@@ -16,3 +16,10 @@ def test_run_python_accepts_model_path_alias():
     assert _normalize_arguments("run_python", {"path": "/skill/run.py"}) == {
         "script": "/skill/run.py",
     }
+
+
+def test_run_python_removes_redundant_path_alias():
+    assert _normalize_arguments("run_python", {
+        "path": "/skill/run.py",
+        "script": "/skill/run.py",
+    }) == {"script": "/skill/run.py"}
