@@ -202,33 +202,33 @@ spec:
       value: {scan_id}
 {agent_env}    securityContext:
       allowPrivilegeEscalation: false
-    readOnlyRootFilesystem: true
-    runAsNonRoot: true
-    capabilities:
-      drop: ["ALL"]
-resources:
-    requests:
-      cpu: 100m
-      memory: 128Mi
-      ephemeral-storage: 64Mi
-    limits:
-      cpu: "1"
-      memory: 512Mi
-      ephemeral-storage: 512Mi
-volumeMounts:
-- name: tmp
-    mountPath: /tmp
-- name: skill
-    mountPath: /skill
-- name: honeypots
-    mountPath: /honeypots
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      capabilities:
+        drop: ["ALL"]
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+        ephemeral-storage: 64Mi
+      limits:
+        cpu: "1"
+        memory: 512Mi
+        ephemeral-storage: 512Mi
+    volumeMounts:
+    - name: tmp
+      mountPath: /tmp
+    - name: skill
+      mountPath: /skill
+    - name: honeypots
+      mountPath: /honeypots
   volumes:
   - name: tmp
-emptyDir: {{}}
+    emptyDir: {{}}
   - name: skill
-emptyDir: {{}}
+    emptyDir: {{}}
   - name: honeypots
-emptyDir: {{}}
+    emptyDir: {{}}
 """
     _check(_run(["kubectl", "apply", "-f", "-"], input_text=manifest, timeout=60), "Creating sandbox pod")
     _check(_run(["kubectl", "-n", "agentguard-sandbox", "wait", "--for=condition=Ready", f"pod/{pod}", "--timeout=90s"], timeout=120), "Waiting for sandbox pod")
