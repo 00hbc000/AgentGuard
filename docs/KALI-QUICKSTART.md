@@ -1,196 +1,249 @@
-# AgentGuard on Kali: from clone to a working Sandbox Scan
+# AgentGuard on Kali: Part 1 static scan, Part 2 dynamic sandbox
 
-Follow the sections in order. Every command is meant to be pasted as-is. Anything that needs your
-attention says **CHECK**.
+AgentGuard scans an AI agent skill in two stages:
 
-> **Status of this guide.** The Python side (rules, runner logic, in-pod harness, dashboard, jobs,
-> batches) is covered by automated tests that ran in the development sandbox. The parts that need a
-> real Docker + kind + Calico cluster (NetworkPolicy enforcement, `strace` inside the pod's security
-> context, Tetragon) could **not** be run there. Section 6 (`verify_sandbox.py`) is how you confirm them
-> on your machine. If it fails, send me the output.
+| | Stage | Engines | Needs Kubernetes? |
+|---|---|---|---|
+| **Part 1** | **Static** (nothing is executed) | AgentGuard native rules AG001-AG011 **+ Cisco skill-scanner + NVIDIA SkillSpector** | no |
+| **Part 2** | **Dynamic** (the skill runs in a locked-down kind pod with honeypots) | scripted harness, runtime guard, sink, canary tokens, optional Tetragon | yes |
 
-## 0. Get the code onto a new test branch
+Scan modes: **Quick** = Part 1 only. **Sandbox** = Part 1 + Part 2. **Deep** = Sandbox + an optional Ollama agent (off unless you opt in, see 2.6).
 
-The work lives on the branch `arena/969bc471-agentguard` of `00hbc000/AgentGuard` (that branch name is
-fixed by the tooling that produced it). To test without touching `main` or `team-handoff`, create your
-own local branch from it:
+> **What was tested where.** Everything in Part 1 was run end to end in the development sandbox (CLI and dashboard,
+> real Cisco 2.3.2 and real NVIDIA SkillSpector 2.12.0, live public malicious skills). The Python side of Part 2
+> (harness, guard, canaries, sink, runner orchestration through a fake `kubectl`) is covered by automated tests.
+> The development sandbox has no Docker/kind, so the **real-cluster** run in Part 2 is the one thing only your Kali can
+> confirm. Part 2 says exactly what to send me if it fails.
 
-```bash
-cd ~/AgentGuard                      # or: git clone https://github.com/00hbc000/AgentGuard.git ~/AgentGuard && cd ~/AgentGuard
-git status --short                   # CHECK: if you have local edits (e.g. docs/TEAM-HANDOFF.md) run: git stash
-git fetch origin arena/969bc471-agentguard
-git switch -c test/sandbox-e2e FETCH_HEAD
-git log --oneline -3
-```
+---
 
-If you want that test branch on GitHub too: `git push -u origin test/sandbox-e2e`.
-
-## 1. Check what you already have
-
-```bash
-docker version --format '{{.Server.Version}}'
-kind version
-kubectl version --client
-kind get clusters                    # expect: agentguard
-kubectl get nodes                    # expect: a Ready node
-kubectl -n kube-system get pods -l k8s-app=calico-node     # expect: Running (NetworkPolicy enforcement)
-```
-
-If all of that works, skip to section 3. Otherwise do section 2.
-
-## 2. Install the missing pieces (only if section 1 failed)
-
-```bash
-sudo apt update && sudo apt install -y git python3 python3-venv python3-pip docker.io
-sudo systemctl enable --now docker
-sudo usermod -aG docker "$USER"      # then log out and back in (or run: newgrp docker)
-
-# kind and kubectl
-curl -Lo /tmp/kind https://github.com/kubernetes-sigs/kind/releases/latest/download/kind-linux-amd64
-sudo install -m 0755 /tmp/kind /usr/local/bin/kind
-curl -Lo /tmp/kubectl "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
-```
-
-A cluster whose network plugin **enforces NetworkPolicy** is mandatory: kind's default plugin may not,
-and AgentGuard refuses to run a skill if its isolation probe shows the pod can reach the internet.
-The usual recipe is kind without its default CNI, plus Calico:
-
-```bash
-cat > /tmp/kind-agentguard.yaml <<'YAML'
-kind: Cluster
-apiVersion: kind.x-k8s.io/v1alpha4
-networking:
-  disableDefaultCNI: true
-  podSubnet: 192.168.0.0/16
-YAML
-kind create cluster --name agentguard --config /tmp/kind-agentguard.yaml
-# Calico: use the manifest URL for a current release from https://docs.tigera.io/calico/latest/getting-started/kubernetes/kind
-kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/calico.yaml
-kubectl -n kube-system rollout status daemonset/calico-node --timeout=300s
-kubectl wait --for=condition=Ready nodes --all --timeout=300s
-```
-
-(I could not test this recipe from the development sandbox. If you already built the cluster for the
-earlier handoff, keep using it.)
-
-## 3. Python environment and unit tests
+## 0. Update the code and clean your shell (do this first)
 
 ```bash
 cd ~/AgentGuard
-python3 -m venv .venv
-source .venv/bin/activate
+git status --short                  # your local edit to docs/TEAM-HANDOFF.md is fine; nothing here touches it
+git fetch origin arena/969bc471-agentguard
+git switch test/sandbox-e2e         # the branch you already created
+git merge --ff-only FETCH_HEAD      # fast-forward onto the new commit
+git log --oneline -3
+```
+
+**Remove the Ollama variables from your shell.** An earlier handoff told you to export them. Current code ignores them
+outside Deep mode, but a clean shell avoids confusion:
+
+```bash
+unset AGENTGUARD_AGENT_MODE AGENTGUARD_OLLAMA_URL AGENTGUARD_OLLAMA_CIDR AGENTGUARD_OLLAMA_MODEL
+grep -n AGENTGUARD ~/.bashrc ~/.zshrc ~/.profile 2>/dev/null     # CHECK: if exports live here, delete those lines
+env | grep AGENTGUARD                                            # expect: no output
+```
+
+---
+
+# PART 1: Static scan (native + Cisco + NVIDIA)
+
+## 1.1 Python environment and unit tests
+
+```bash
+cd ~/AgentGuard
+python3 -m venv .venv && source .venv/bin/activate
 python -m pip install -r requirements.txt pytest
-python -m agentguard.tests.make_fixtures      # inert static fixtures (git-ignored)
-pytest -q                                     # expect: all pass (about 100 tests, ~15 s)
+python -m agentguard.tests.make_fixtures        # inert static fixtures (git-ignored)
+pytest -q                                       # expect: 116 passed (about 15 s)
 ```
 
-`pytest` needs no Kubernetes. It runs the real in-pod harness locally and drives the runner through a fake `kubectl`.
+The suite is hermetic: it clears every `AGENTGUARD_*` variable itself, so your shell cannot change the result.
+(It passed here with `AGENTGUARD_AGENT_MODE=ollama` and the other Ollama variables exported, to reproduce your setup.)
 
-## 4. Build the sandbox images (once)
+## 1.2 Install Cisco and NVIDIA
 
 ```bash
-python -m agentguard.cli prepare-sandbox
+python -m pip install uv              # lets the installer fetch Python 3.13 for SkillSpector if your system lacks it
+bash scripts/install_scanners.sh      # creates ~/.venvs/cisco and ~/.venvs/skillspector (takes a few minutes)
+python -m agentguard.cli scanners
 ```
 
-This builds `agentguard-sandbox:<hash>` and `agentguard-sink:<hash>` and loads them into kind. The tag
-is a hash of `sandbox/`, so unchanged code reuses the images and later scans start in seconds. The first
-run downloads `python:3.14-slim` and installs `strace`, so it needs internet and a few minutes.
-(`./scripts/build_and_load.sh` is a wrapper for the same thing.)
+Expected:
 
-## 5. Optional: Cisco and NVIDIA scanners
+```
+cisco   AVAILABLE  venv /home/<you>/.venvs/cisco  -> .../skill-scanner scan
+nvidia  AVAILABLE  venv /home/<you>/.venvs/skillspector  -> .../skillspector scan
+```
 
-Native rules work without them (they show as `skipped`). To add Cisco, which I verified works:
+No `export` is needed: AgentGuard looks in `~/.venvs/` (and `PATH`) by itself. The dashboard's readiness strip shows the same.
+
+Why the script chooses its Python: SkillSpector needs Python 3.12-3.15 and depends on `yara-python`, which ships binary wheels
+for 3.12 and 3.13 but **not 3.14** (your venv's Python). On 3.14 pip would compile it from source, which needs
+`sudo apt install -y build-essential python3-dev libssl-dev` and may still fail. So the script prefers 3.13/3.12 and uses `uv`
+to download one if needed. I verified the script here with Python 3.11 (Cisco) and 3.12 (NVIDIA, installed straight from
+`git+https://github.com/NVIDIA/SkillSpector.git`). The `uv`-downloads-3.13 path could not be exercised here (my sandbox blocks
+that download host). If it fails, tell me the last 15 lines of output, or point it at any 3.12/3.13 interpreter:
+`AGENTGUARD_SCANNER_PYTHON=/usr/bin/python3.13 bash scripts/install_scanners.sh nvidia`.
+
+Not installed? That is not an error: a missing scanner shows as `skipped` and the native rules still run.
+
+## 1.3 CLI: all three engines on a fixture
 
 ```bash
-python3 -m venv ~/.venvs/cisco && ~/.venvs/cisco/bin/pip install cisco-ai-skill-scanner
-export AGENTGUARD_CISCO_COMMAND="$HOME/.venvs/cisco/bin/skill-scanner scan"
+python -m agentguard.cli scan fixtures/combined-chain --mode quick --output runs/static
+echo "exit=$?"
 ```
 
-NVIDIA SkillSpector needs Python 3.12+ (`uv python install 3.12`), so it is a separate install; I could not
-verify that adapter. Set `AGENTGUARD_NVIDIA_COMMAND` the same way only if it installs cleanly. Export the variables
-in the same terminal that starts the dashboard.
-
-## 6. Prove the sandbox works (acceptance check)
+Observed here: `findings: 5`, `scan_status: complete`, `verdict: malicious`, **exit 1** (exit 1 = findings, which is normal).
+Per engine: cisco 1, nvidia 2, agentguard 2. Counts can differ by a finding or two with other scanner versions;
+what matters is that `cisco` and `nvidia` both say `completed` in the report's `tool_runs`.
 
 ```bash
-python scripts/verify_sandbox.py
+python3 - <<'EOF'
+import json; d = json.load(open("runs/static/combined-chain.json"))
+print({r["tool"]: r["status"] for r in d["tool_runs"]})
+EOF
 ```
 
-It runs five controlled, synthetic samples through a real Sandbox Scan and checks what must be seen:
+Expected: `{'cisco': 'completed', 'nvidia': 'completed'}`.
 
-| Sample | Must produce |
-|---|---|
-| `benign-csv-stats` | ran its command, no findings, verdict `no_findings` |
-| `runtime-exfil-sink` | CRITICAL `DYN_HONEYPOT_EXFIL` |
-| `runtime-exfil-evasive` | CRITICAL `DYN_HONEYPOT_EXFIL`; static rules alone find nothing |
-| `runtime-exfil-external` | HIGH `DYN_EXFIL_ATTEMPT`, no proven exfiltration |
-| `runtime-env-dump` | HIGH `DYN_ENV_EXPOSED` |
+## 1.4 CLI: a live public malicious skill
 
-Then it checks that no sandbox pod is left behind. Expected last line: `ALL CHECKS PASSED`.
+```bash
+python -m agentguard.cli scan https://github.com/trailofbits/overtly-malicious-skills/tree/main/skills/csv-summarizer \
+    --mode quick --output runs/csv
+```
 
-**If it fails**, the message usually tells you why:
+Observed: about 15 s, `findings: 6`, `scan_status: complete`, verdict `high_risk`, exit 1.
 
-| Message | Meaning / fix |
-|---|---|
-| `kubectl cannot reach a Kubernetes cluster` | cluster is not running: `kind get clusters`, `kubectl config use-context kind-agentguard` |
-| `NetworkPolicy isolation proof failed: sandbox reached the public internet` | the CNI does not enforce policies. Install Calico (section 2). AgentGuard refuses to run the skill. |
-| `sandbox could not reach the sink` | the sink pod is not ready: `kubectl -n agentguard-sandbox get pods` |
-| runtime events show `trace_available: false` | `strace` is not permitted by the pod's security context; scans still work through the Python guard and the sink, with less syscall evidence (only affects non-Python code) |
-| image build errors | check internet/DNS for Docker, then rerun `prepare-sandbox` |
+This skill hides its payload behind 100,000 blank lines. SkillSpector's paragraph splitter is quadratic on that and would
+time out, so AgentGuard detects the padding and gives NVIDIA a copy with the blank runs collapsed; the report says so
+(`stages.nvidia.note`). The native rule AG006 inspects the original file.
 
-Leftover pods from an interrupted run: `kubectl -n agentguard-sandbox delete pod --all`.
-
-## 7. Run the dashboard
+## 1.5 Dashboard, Quick mode
 
 ```bash
 python -m agentguard.cli web --host 0.0.0.0 --port 8080
 ```
 
-Open `http://127.0.0.1:8080` in Kali (or `http://<kali-ip>:8080` from another machine; `ip -br addr` shows the IP).
-The top of the page shows a readiness strip: docker / kind / kubectl / cluster / sandbox image / Cisco / NVIDIA.
-Data is stored in `runs/web/` (override with `--data-dir`), so history survives restarts.
+Open `http://127.0.0.1:8080`. The readiness strip should show **Cisco scanner** and **NVIDIA scanner** as present
+(docker/kind/kubectl chips only matter for Part 2).
 
-### Test plan (do these in order)
+1. Sample library -> `benign-csv-stats` -> **Quick Scan**. Verdict `NO FINDINGS`.
+2. Sample library -> `runtime-env-dump` -> Quick Scan. Verdict `HIGH RISK`. The timeline shows
+   `Running external scanner: cisco`, `... nvidia`, `... native rules`; the report lists findings tagged cisco / nvidia / agentguard.
+3. **Batch** tab -> *Add all malicious samples* + *Add all benign controls* -> Quick -> Run (about 7 minutes with both scanners).
 
-1. **Control, Quick:** sample library -> `benign-csv-stats` -> Quick Scan. Verdict `NO FINDINGS`.
-2. **Control, Sandbox:** same sample -> Sandbox Scan. You should see the stage timeline (ingestion, static, gate,
-   sandbox...), then verdict `NO FINDINGS` with *Runtime evidence* showing 1 command run.
-3. **Static miss, runtime catch:** `runtime-exfil-evasive` -> Quick Scan says `NO FINDINGS`.
-   Run it again as Sandbox Scan: verdict **MALICIOUS - exfiltration proven at runtime**, CRITICAL `DYN_HONEYPOT_EXFIL`,
-   and the *Sink events* group lists the canary names the sink received.
-4. **Other runtime samples:** `runtime-exfil-sink`, `runtime-exfil-external`, `runtime-env-dump` (expectations in the table above).
-5. **Public malicious skills (Quick is enough, they are static-detectable):** sample library -> Trail of Bits,
-   `agent-guard-corpus` and Cisco entries. Or paste any `/tree/main/<path>` GitHub URL.
-6. **Public benign controls:** the *Benign public controls* group (`anthropics/skills` and Cisco `simple-math`).
-   `claude-api` shows two LOW notes: it *documents* `curl | sh` and prompt injection as things to refuse.
-7. **Batch:** Batch tab -> *Add all malicious samples* and *Add all benign controls* -> Quick -> Run. The table shows
-   `detected / missed / false positive` per known sample. Expected in Quick mode: every public malicious sample is
-   *detected* except the three whose attack is only in prose; `runtime-exfil-evasive` is *missed* (that is what
-   Sandbox mode is for).
-8. **Cancel:** start a Sandbox Scan and press Cancel. The pod is deleted (`kubectl -n agentguard-sandbox get pods`).
-9. **History:** History tab shows every run; download the JSON or the standalone HTML report.
-10. **Restart survival:** stop the dashboard (Ctrl+C), start it again; History is still there.
+Observed result of the full 25-sample batch (all 25 scans completed, no scanner failures):
 
-Expanding a whole repository: put `https://github.com/trailofbits/overtly-malicious-skills` (no `/tree/...`) into Batch;
-each skill inside becomes its own scan.
+| Outcome | Count | Which |
+|---|---|---|
+| detected (malicious sample flagged) | **20 of 20** | every Trail of Bits, agent-guard-corpus, Cisco and runtime fixture, including `runtime-exfil-evasive` (which the native rules alone miss) |
+| clean | 3 | `benign-csv-stats`, `cisco-simple-math`, `anthropic-brand-guidelines` |
+| false positive | 2 | `anthropic-skill-creator`, `anthropic-claude-api`: both `HIGH RISK` |
 
-## 8. Same thing from the command line
+Those two false positives are real opinions of the external engines on large benign skills (Cisco rates a CRITICAL on both;
+NVIDIA reports 9 and 173 issues). They are labelled `HIGH RISK - CRITICAL from one engine` with that reason, never `malicious`:
+**`malicious` requires runtime proof or CRITICAL findings from at least two engines.** That is why Part 2 exists: a
+static flag is a reason to run the sandbox, not a conviction.
+
+Timing: Cisco takes 7-20 s per skill, NVIDIA 5-35 s, but NVIDIA needs about 4.5 minutes for the 96-file `claude-api` skill
+(timeout is 10 minutes; change with `AGENTGUARD_NVIDIA_TIMEOUT=<seconds>`).
+
+---
+
+# PART 2: Dynamic sandbox (Kubernetes)
+
+## 2.1 Check the cluster (you already did; for reference)
 
 ```bash
-python -m agentguard.cli scan samples/runtime-exfil-evasive --no-external --mode sandbox --output runs/evasive
-python -m agentguard.cli scan https://github.com/trailofbits/overtly-malicious-skills/tree/main/skills/csv-summarizer \
-    --no-external --mode quick --output runs/csv
-python -m agentguard.cli list-skills https://github.com/anthropics/skills    # JSON list of skill URLs
+docker version --format '{{.Server.Version}}'; kind version; kubectl version --client
+kubectl get nodes                                         # a Ready node
+kubectl -n kube-system get pods -l k8s-app=calico-node    # Running: NetworkPolicy is enforced
 ```
 
-Exit code `1` means findings at or above `--fail-on-severity` (default MEDIUM) and is normal for malicious skills; `2` means the
-scan itself had a problem (for example the sandbox was unavailable).
+Your last output showed docker 28.5.2, kind v0.33.0, kubectl v1.36.4, cluster `agentguard` Ready, calico-node Running. The first
+Sandbox Scan also proved isolation live (public internet blocked, sink reachable): AgentGuard refuses to run a skill if that
+proof fails. A cluster needs a CNI that enforces NetworkPolicy; the usual recipe is kind with `disableDefaultCNI: true` plus Calico
+(https://docs.tigera.io/calico/latest/getting-started/kubernetes/kind).
 
-## 9. Safety rules this setup keeps
+## 2.2 Build the images (already done once; re-run after code changes under `sandbox/`)
 
-- Skill code runs only in the pod: read-only root, non-root user, all capabilities dropped, no service-account token,
-  egress limited to the sink and cluster DNS.
-- Remote skills are downloaded by `git` (hooks off, no submodules, symlinks removed) and read as text by the host.
-- The dashboard accepts only public GitHub/GitLab/Bitbucket URLs and library samples, never local paths.
-- `runs/`, `fixtures/` and reports are git-ignored; do not commit them. Do not put real credentials anywhere near this.
+```bash
+python -m agentguard.cli prepare-sandbox       # prints the image tag (yours was 6c954ec4fd6f); unchanged code reuses the images
+```
+
+## 2.3 What the dynamic stage does
+
+1. Starts a pod: read-only root, non-root, all capabilities dropped, no service-account token, egress only to the sink + cluster DNS.
+2. Proves the isolation (three network probes). If any probe says "reachable from the internet", the scan stops.
+3. Plants honeypots: fake `~/.aws/credentials`, `.ssh` key, `.env`, and canary environment variables. Each canary is unique per scan
+   (`AGCANARY-<hex>-<NAME>`).
+4. Runs the skill's entrypoint with the **scripted harness** (always; deterministic; no LLM), with a Python audit guard and `strace`.
+5. A canary seen **in the sink's request log** is the proof of exfiltration -> CRITICAL `DYN_HONEYPOT_EXFIL` -> verdict `MALICIOUS`.
+   Attempts to reach external hosts are HIGH `DYN_EXFIL_ATTEMPT` (blocked by policy, so not "proven").
+6. Always deletes the pod. A sandbox that ran no commands gives `INCONCLUSIVE`, never "clean".
+
+## 2.4 Acceptance check on the real cluster
+
+```bash
+python scripts/verify_sandbox.py
+```
+
+It runs five controlled samples through a real Sandbox Scan:
+
+| Sample | Must produce |
+|---|---|
+| `benign-csv-stats` | ran 1 command, no findings, verdict `no_findings` |
+| `runtime-exfil-sink` | CRITICAL `DYN_HONEYPOT_EXFIL` |
+| `runtime-exfil-evasive` | CRITICAL `DYN_HONEYPOT_EXFIL` |
+| `runtime-exfil-external` | HIGH `DYN_EXFIL_ATTEMPT`, never CRITICAL |
+| `runtime-env-dump` | HIGH `DYN_ENV_EXPOSED` |
+
+Last line should be `ALL CHECKS PASSED`. The same expectations pass here with the real in-pod harness (directly, and for the benign and evasive samples through the
+full runner behind a fake `kubectl`, including with `AGENTGUARD_AGENT_MODE=ollama` exported). The earlier failure on your machine was that exported variable replacing
+the scripted harness with the Ollama agent, which is fixed.
+
+**If it fails, send me** the printed summary plus these two outputs (they show whether `strace`/the guard work in your pod):
+
+```bash
+kubectl -n agentguard-sandbox get pods,networkpolicy
+kubectl -n agentguard-sandbox logs deploy/agentguard-sink --tail=40
+```
+
+Likely messages: `isolation proof failed` -> the CNI does not enforce NetworkPolicy (Calico). `trace_available: false` -> `strace` is not
+allowed in the pod; scans still work through the guard and sink (only non-Python syscall evidence is lost). A hang is bounded: the
+skill exec is capped at 240 s (`AGENTGUARD_DYNAMIC_TIMEOUT`); stray pods: `kubectl -n agentguard-sandbox delete pod --all`.
+
+## 2.5 Dashboard, Sandbox mode (static first, then dynamic)
+
+Restart the dashboard in the same shell (it must be the shell without the Ollama variables), then:
+
+1. `benign-csv-stats` -> **Sandbox Scan**. Timeline: ingestion, static (cisco, nvidia, native), gate, sandbox. Verdict `NO FINDINGS`, runtime evidence shows 1 command run.
+2. `runtime-exfil-evasive` -> Quick: static engines flag it (Cisco and NVIDIA catch it; the native rules alone do not) -> then **Sandbox Scan**:
+   verdict **MALICIOUS - exfiltration proven at runtime**, CRITICAL `DYN_HONEYPOT_EXFIL`, and *Sink events* lists the canary names the sink received.
+3. `runtime-exfil-sink`, `runtime-exfil-external`, `runtime-env-dump` as in the table above.
+4. Press **Cancel** during a Sandbox Scan: the pod disappears (`kubectl -n agentguard-sandbox get pods`).
+5. History tab: every run, with JSON and HTML downloads. Stop and restart the dashboard: history survives (`runs/web/`).
+
+## 2.6 Deep mode and the optional Ollama agent
+
+Deep = the Sandbox scan above **plus** an LLM agent that explores the skill after the scripted run. It is off unless you opt in
+before starting the dashboard:
+
+```bash
+export AGENTGUARD_AGENT_MODE=ollama AGENTGUARD_OLLAMA_URL=http://172.19.0.1:11434 \
+       AGENTGUARD_OLLAMA_CIDR=172.19.0.1/32 AGENTGUARD_OLLAMA_MODEL=qwen2.5:1.5b
+```
+
+Rules: it never replaces the scripted harness; it only runs in **Deep** mode; it is time-bounded (`AGENTGUARD_AGENT_TIMEOUT`, default
+180 s); and if Ollama is unreachable the scan still completes, with `agent_errors` in the coverage and `mode: scripted+ollama_agent`.
+Sandbox mode ignores these variables entirely. Unset them again when you are done.
+
+## 2.7 Known limits
+
+- The runtime guard covers Python only; other languages are seen through `strace` and the sink.
+- Events inside the pod can be tampered with by hostile code; only sink evidence is authoritative.
+- Cluster DNS is allowed, so DNS-tunnel exfiltration would not be seen by the sink.
+- Only one Sandbox Scan runs at a time (the dashboard queues the rest).
+- Static analysis cannot find attacks that live only in prose; use Deep/LLM review for those.
+
+## Safety rules this setup keeps
+
+- Skill code runs only in the pod. Remote skills are downloaded with `git` (hooks off, no submodules, symlinks removed) and only read as text by the host.
+- The dashboard accepts public GitHub/GitLab/Bitbucket URLs and library samples only, never local paths.
+- `runs/`, `fixtures/` and reports are git-ignored; do not commit them, and keep real credentials away from this setup.

@@ -54,3 +54,16 @@ def test_gate_escalates_clean_skill_that_ships_scripts():
 def test_gate_still_stops_on_critical():
     critical = Finding(tool="t", finding_id="1", rule_id="R", category="c", severity="CRITICAL", message="m")
     assert not decide([critical], has_executable_content=True).escalate
+
+
+def test_critical_from_a_single_engine_is_high_risk_not_malicious():
+    # External scanners are noisy on benign skills (observed on anthropics/skills): one engine alone is not proof.
+    one = build_verdict(payload("CRITICAL", [finding("X1", tool="cisco", severity="CRITICAL"),
+                                             finding("X2", tool="nvidia", severity="HIGH")]))
+    assert one["label"] == "high_risk" and "cisco" in one["reason"] and "no second engine" in one["reason"]
+
+
+def test_critical_from_two_engines_is_malicious():
+    two = build_verdict(payload("CRITICAL", [finding("X1", tool="cisco", severity="CRITICAL"),
+                                             finding("TT3", tool="nvidia", severity="CRITICAL")]))
+    assert two["label"] == "malicious" and "cisco" in two["reason"] and "nvidia" in two["reason"]

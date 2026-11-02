@@ -47,8 +47,17 @@ def build_verdict(payload: dict[str, Any]) -> dict[str, Any]:
                 "recommendation": "Do not install or run this skill.", "evidence": evidence, "gaps": gaps}
     rank = _ORDER.get(severity, 0)
     if rank >= 4:
-        return {"label": "malicious", "headline": "CRITICAL findings", "reason": "Critical evidence was found.",
-                "recommendation": "Do not install or run this skill.", "evidence": evidence, "gaps": gaps}
+        critical_tools = sorted({f.get("tool") for f in findings if f.get("severity") == "CRITICAL"})
+        if len(critical_tools) >= 2 or "agentguard_sandbox" in critical_tools:
+            return {"label": "malicious", "headline": "CRITICAL findings",
+                    "reason": "CRITICAL evidence from independent engines: " + ", ".join(critical_tools) + ".",
+                    "recommendation": "Do not install or run this skill.", "evidence": evidence, "gaps": gaps}
+        # A single static engine's CRITICAL is a strong signal but uncorroborated (external scanners are noisy
+        # on benign skills), so it is reported as high risk with the reason spelled out, never hidden.
+        return {"label": "high_risk", "headline": "HIGH RISK - CRITICAL from one engine",
+                "reason": f"Only {critical_tools[0]} rated a finding CRITICAL; no second engine or runtime proof corroborates it.",
+                "recommendation": "Review the CRITICAL finding and run a Sandbox Scan to confirm or refute it.",
+                "evidence": evidence, "gaps": gaps}
     if rank == 3:
         return {"label": "high_risk", "headline": "HIGH RISK",
                 "reason": f"{len(findings)} finding(s); highest severity HIGH.",

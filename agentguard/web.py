@@ -22,6 +22,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from . import samples as sample_library
+from . import scanners
 from .jobs import ID_PATTERN, REPO_ROOT, JobStore, validate_public_git_url
 from .report_html import render_report
 
@@ -236,11 +237,14 @@ def readiness() -> dict:
         problems.append("kubectl cannot reach a cluster (run: kind create cluster --name agentguard).")
     elif not images:
         problems.append("sandbox images are not built yet (run: python -m agentguard.cli prepare-sandbox).")
+    scanner_info = scanners.status()
     value = {
         "tools": tools, "cluster": cluster, "images": images,
         "sandbox_ready": not problems, "sandbox_problem": " ".join(problems),
-        "cisco_configured": bool(os.environ.get("AGENTGUARD_CISCO_COMMAND")),
-        "nvidia_configured": bool(os.environ.get("AGENTGUARD_NVIDIA_COMMAND")),
+        "cisco_configured": scanner_info["cisco"]["available"],
+        "nvidia_configured": scanner_info["nvidia"]["available"],
+        "scanners": scanner_info,
+        "agent_mode": os.environ.get("AGENTGUARD_AGENT_MODE", "").strip().lower() == "ollama",
         "monitoring_tier": os.environ.get("AGENTGUARD_MONITORING_TIER", "fallback"),
     }
     _HEALTH_CACHE.update(time=now, value=value)

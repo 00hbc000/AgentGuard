@@ -11,15 +11,15 @@ skill with honeypot credentials and watches what it does. It is modelled on the 
 |---|---|---|
 | **Quick** (`--mode quick`) | ingestion, native rules AG001-AG011, optional Cisco/NVIDIA | never |
 | **Sandbox** (`--mode sandbox`) | Quick + the skill runs inside an isolated kind pod with decoy credentials | only in the pod |
-| **Deep Trace** (`--mode deep`) | same pipeline as Sandbox today; reserved for longer tracing | only in the pod |
+| **Deep** (`--mode deep`) | Sandbox, plus the optional Ollama agent as a separate time-bounded phase after the scripted run (only if `AGENTGUARD_AGENT_MODE=ollama`) | only in the pod |
 
-Every report ends in a plain-language **verdict**: `malicious` (proven at runtime), `high_risk`,
+Every report ends in a plain-language **verdict**: `malicious` (proven at runtime, or CRITICAL from at least two engines), `high_risk` (including a CRITICAL from a single engine),
 `suspicious`, `low_risk`, `no_findings` or `inconclusive`. `no_findings` is never "safe"; and a
 Sandbox Scan that could not run, or found no command to run, is `inconclusive`, not clean.
 
 ## Scope
 
-- No LLM calls, API keys, cloud analyzers or uploads. Cisco and NVIDIA are optional external commands configured with `AGENTGUARD_CISCO_COMMAND` and `AGENTGUARD_NVIDIA_COMMAND`; missing ones stay `skipped` and never invalidate a native scan.
+- No LLM calls, API keys, cloud analyzers or uploads. Cisco skill-scanner and NVIDIA SkillSpector are optional: `bash scripts/install_scanners.sh` installs them into `~/.venvs/` where AgentGuard finds them automatically (check with `python -m agentguard.cli scanners`; `AGENTGUARD_CISCO_COMMAND` / `AGENTGUARD_NVIDIA_COMMAND` override). Missing ones stay `skipped` and never invalidate a native scan.
 - Untrusted skills are only ever executed inside the Kubernetes sandbox, never on the host.
 - Upstream source checkouts and benchmark data are local research inputs and are excluded from Git.
 - NVIDIA's random `finding_id` is kept only in `raw`; AgentGuard computes a stable SHA-256 fingerprint.
@@ -29,7 +29,9 @@ Sandbox Scan that could not run, or found no command to run, is `inconclusive`, 
 See **[docs/KALI-QUICKSTART.md](docs/KALI-QUICKSTART.md)**. Short version:
 
 ```bash
-python -m agentguard.cli prepare-sandbox          # build + load sandbox images into kind (first time)
+bash scripts/install_scanners.sh                  # Part 1: Cisco + NVIDIA into ~/.venvs (auto-detected)
+python -m agentguard.cli scanners                 # both should say AVAILABLE
+python -m agentguard.cli prepare-sandbox          # Part 2: build + load sandbox images into kind (first time)
 python scripts/verify_sandbox.py                  # proves the sandbox works with controlled samples
 python -m agentguard.cli web --host 0.0.0.0 --port 8080
 ```
@@ -59,12 +61,11 @@ Native rules only:
 python -m agentguard.cli scan fixtures/combined-chain --no-external --output artifacts/agentguard
 ```
 
-Both configured upstream scanners plus native rules:
+Both upstream scanners plus native rules (install once with `bash scripts/install_scanners.sh`; no exports needed):
 
 ```bash
-export AGENTGUARD_CISCO_COMMAND='skill-scanner scan'
-export AGENTGUARD_NVIDIA_COMMAND='skillspector scan'
-python -m agentguard.cli scan fixtures/combined-chain --output artifacts/agentguard
+python -m agentguard.cli scanners
+python -m agentguard.cli scan fixtures/combined-chain --mode quick --output artifacts/agentguard
 ```
 
 Batch and comparison:
@@ -148,7 +149,7 @@ Cisco/NVIDIA scanners or a human.
 
 `samples/` holds synthetic fixtures with known outcomes (see [samples/README.md](samples/README.md)); the dashboard's
 sample library also links public malicious corpora and benign controls. One sample, `runtime-exfil-evasive`, is invisible to
-static rules and is proven malicious only by a Sandbox Scan.
+AgentGuard's own static rules (Cisco and NVIDIA do flag it) and is *proven* malicious only by a Sandbox Scan.
 
 ## Output
 

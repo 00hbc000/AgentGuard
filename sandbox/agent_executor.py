@@ -63,8 +63,7 @@ def _validate_arguments(action: str, arguments: dict) -> dict:
 
 
 def _emit(event: dict) -> None:
-    with Path("/tmp/agentguard-agent-events.jsonl").open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps(event, sort_keys=True) + "\n")
+    execution.emit(event)
     print(json.dumps(event, sort_keys=True), flush=True)
 
 

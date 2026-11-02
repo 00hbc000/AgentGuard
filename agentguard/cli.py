@@ -56,6 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     web_parser.add_argument("--data-dir", type=Path, help="Where job history and reports are stored")
     list_parser = commands.add_parser("list-skills", help="List the skills inside a remote repository URL")
     list_parser.add_argument("source")
+    commands.add_parser("scanners", help="Show which external scanners (Cisco, NVIDIA) AgentGuard can find")
     commands.add_parser("prepare-sandbox", help="Build the sandbox/sink images and load them into kind; prints the tag")
     return parser
 
@@ -85,6 +86,14 @@ def main(argv: list[str] | None = None) -> int:
 
             serve(args.host, args.port, data_dir=args.data_dir)
             return 0
+        if args.command == "scanners":
+            from . import scanners
+
+            info = scanners.status()
+            for tool, entry in info.items():
+                print(f"{tool:7} {'AVAILABLE' if entry['available'] else 'missing  '}  {entry['source']}"
+                      + (f"  -> {' '.join(entry['command'])}" if entry["command"] else ""))
+            return 0 if all(entry["available"] for entry in info.values()) else 3
         if args.command == "prepare-sandbox":
             from .dynamic.runner import prepare_images
 

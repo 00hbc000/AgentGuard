@@ -11,7 +11,7 @@ import execution  # noqa: E402  (sibling module copied into the image next to th
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--phase", choices=("prepare", "execute"), required=True)
+    parser.add_argument("--phase", choices=("prepare", "execute", "agent"), required=True)
     parser.add_argument("--command", default="")
     parser.add_argument("--timeout", type=int, default=int(os.environ.get("AGENTGUARD_COMMAND_TIMEOUT", "30")))
     args = parser.parse_args()
@@ -23,7 +23,8 @@ def main() -> int:
         created = execution.create_honeypots(token)
         print(f"AGENTGUARD_PHASE=prepare honeypots={len(created)}", flush=True)
         return 0
-    if os.environ.get("AGENTGUARD_AGENT_MODE") == "ollama":
+    if args.phase == "agent":
+        # Optional Deep-mode extra, run AFTER the scripted execute phase by the host runner.
         # The LLM-driven executor. Its run_python tool launches the skill through the same
         # guarded environment (decoy HOME, canary env, audit hook, strace) as scripted runs.
         import subprocess

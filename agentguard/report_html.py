@@ -158,7 +158,7 @@ def render_report(result: dict[str, Any]) -> str:
     for name, details in stages.items():
         if not isinstance(details, dict):
             continue
-        reason = details.get("reason")
+        reason = details.get("reason") or details.get("note")
         stage_items.append("<div class='tool'><strong>%s</strong>: %s%s</div>" % (
             esc(name), esc(details.get("status", "unknown")), (" &middot; " + esc(reason)) if reason else ""))
     stage_html = "".join(stage_items) or "<span class='muted'>No stage data</span>"

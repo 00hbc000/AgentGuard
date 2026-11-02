@@ -44,11 +44,14 @@ def test_quick_scan_job_is_durable_and_reports_verdict(store, tmp_path):
     assert again.result(job_id)["verdict"]["label"] == "high_risk"
 
 
-def test_sandbox_scan_without_cluster_reports_gap_not_success(store):
+def test_sandbox_scan_without_cluster_reports_gap_not_success(store, tmp_path, monkeypatch):
+    # Simulate a machine without docker/kind/kubectl no matter what is installed here.
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+    monkeypatch.setenv("PATH", str(empty_bin))
     source = samples.resolve_source("benign-csv-stats")
     meta = finished(store, store.submit(source, "sandbox", sample_id="benign-csv-stats"))
-    if meta["verdict"] != "inconclusive":  # only meaningful on machines without docker/kind/kubectl
-        pytest.skip("this machine has a working sandbox")
+    assert meta["verdict"] == "inconclusive", meta
     assert meta["status"] == "partial" and "No skill code was executed" in meta["error"]
     assert meta["outcome"] == "clean"  # benign expectation, but report says inconclusive
 

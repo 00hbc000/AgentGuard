@@ -52,8 +52,9 @@ entrypoint, or a failed sandbox, produces verdict **inconclusive**, never "clean
 - Cluster DNS is allowed, so DNS-based exfiltration is possible; the sink would not see it.
 - Skills that behave differently when they detect a sandbox, wait out the time limit, or need real credentials/APIs to
   reach their payload can pass. Absence of findings is not a safety guarantee.
-- Prose-only attacks (prompt injection) are static-stage findings; the sandbox does not run an LLM unless
-  `AGENTGUARD_AGENT_MODE=ollama` is configured (existing optional path, not part of the default flow).
+- Prose-only attacks (prompt injection) are static-stage findings; the sandbox does not run an LLM unless you opt in to the
+  Ollama agent. The agent runs only in **Deep** mode (`AGENTGUARD_AGENT_MODE=ollama`), as a separate time-bounded phase *after*
+  the scripted harness; it never replaces it, and its failure does not fail the scan. Sandbox mode ignores those variables.
 - Tetragon (eBPF) evidence is used when the DaemonSet is present and events correlate to the pod; otherwise tier `fallback`.
 - Verified in development without Kubernetes: the harness, guard, canaries, sink, collector, runner orchestration (via a fake
   `kubectl`). Verified only on a real cluster by `scripts/verify_sandbox.py`: NetworkPolicy enforcement, `strace` under the pod's

@@ -129,7 +129,16 @@ def _preflight() -> None:
         )
 
 
-def _apply_manifests(sink_image: str) -> None:
+def agent_requested(deep: bool) -> bool:
+    """The Ollama agent is an opt-in extra for Deep mode only.
+
+    The deterministic scripted harness runs in every sandbox scan; the environment can never
+    replace it. Exporting AGENTGUARD_AGENT_MODE therefore has no effect on Sandbox mode.
+    """
+    return bool(deep) and os.environ.get("AGENTGUARD_AGENT_MODE", "").strip().lower() == "ollama"
+
+
+def _apply_manifests(sink_image: str, agent: bool = False) -> None:
     root = _repo_root()
     for name in ("namespace.yaml", "sink.yaml", "network-policy.yaml"):
         _check(_run(["kubectl", "apply", "-f", str(root / "k8s" / name)], timeout=60), f"Applying {name}")
@@ -137,7 +146,7 @@ def _apply_manifests(sink_image: str) -> None:
                  "deployment/agentguard-sink", f"sink={sink_image}"], timeout=60), "Selecting sink image")
     _check(_run(["kubectl", "-n", "agentguard-sandbox", "rollout", "status",
                  "deployment/agentguard-sink", "--timeout=90s"], timeout=120), "Waiting for sink")
-    if os.environ.get("AGENTGUARD_AGENT_MODE") == "ollama":
+    if agent:
         cidr = os.environ.get("AGENTGUARD_OLLAMA_CIDR")
         if not cidr:
             raise DynamicUnavailable("AGENTGUARD_OLLAMA_CIDR is required for Ollama egress allow-listing")
@@ -220,13 +229,13 @@ def _run_probe(pod: str, target: str, timeout: int = 20) -> tuple[bool, str]:
     return result.returncode == 0, (result.stdout + result.stderr).strip()
 
 
-def _create_pod(pod: str, image: str, scan_id: str) -> None:
+def _create_pod(pod: str, image: str, scan_id: str, agent: bool = False) -> None:
     agent_env = ""
-    if os.environ.get("AGENTGUARD_AGENT_MODE") == "ollama":
+    if agent:
         agent_env = f"""    - name: AGENTGUARD_AGENT_MODE
       value: ollama
     - name: AGENTGUARD_OLLAMA_URL
-      value: {os.environ["AGENTGUARD_OLLAMA_URL"]}
+      value: {os.environ.get("AGENTGUARD_OLLAMA_URL", "")}
     - name: AGENTGUARD_OLLAMA_MODEL
       value: {os.environ.get("AGENTGUARD_OLLAMA_MODEL", "qwen2.5:7b")}
 """
@@ -369,9 +378,14 @@ def _sink_addresses(namespace: str) -> set[str]:
     return allowed
 
 
-def run(root: Path, progress: Callable[[str], None] | None = None) -> DynamicResult:
-    """Run the skill in a kind Kubernetes pod with sink-only egress."""
+def run(root: Path, progress: Callable[[str], None] | None = None, deep: bool = False) -> DynamicResult:
+    """Run the skill in a kind Kubernetes pod with sink-only egress.
+
+    The scripted harness always runs. With ``deep=True`` and AGENTGUARD_AGENT_MODE=ollama an
+    additional, time-bounded LLM agent phase runs afterwards; its failure never fails the scan.
+    """
     say = progress or (lambda message: None)
+    agent = agent_requested(deep)
     _require_tools()
     say("Checking Kubernetes cluster")
     _preflight()
@@ -381,13 +395,13 @@ def run(root: Path, progress: Callable[[str], None] | None = None) -> DynamicRes
     pod = f"agentguard-run-{scan_id[:8]}"
     sandbox_image, sink_image = _build_images(cluster, say)
     say("Applying sandbox namespace, sink and NetworkPolicies")
-    _apply_manifests(sink_image)
+    _apply_manifests(sink_image, agent)
     allowed_hosts = _sink_addresses(namespace)
     scan_started = datetime.now(timezone.utc)
     tetragon_stream = _start_tetragon_stream(scan_started)
     try:
         say(f"Creating sandbox pod {pod}")
-        _create_pod(pod, sandbox_image, scan_id)
+        _create_pod(pod, sandbox_image, scan_id, agent)
         image_id = _run([
             "kubectl", "-n", namespace, "get", "pod", pod,
             "-o", "jsonpath={.status.containerStatuses[?(@.name=='skill')].imageID}",
@@ -453,12 +467,25 @@ def run(root: Path, progress: Callable[[str], None] | None = None) -> DynamicRes
             # Keep whatever evidence the sink and pod captured before the timeout.
             timed_out = True
             execute = subprocess.CompletedProcess(args, 124, "", "Skill execution exceeded the time limit")
+        agent_events: list[dict] = []
+        if agent:
+            say("Deep mode: running the optional Ollama agent after the scripted run")
+            try:
+                agent_run = _run(["kubectl", "-n", namespace, "exec", pod, "--", "python",
+                                  "/opt/agentguard/run_skill.py", "--phase", "agent"],
+                                 timeout=int(os.environ.get("AGENTGUARD_AGENT_TIMEOUT", "180")))
+                if agent_run.returncode:
+                    agent_events.append({"type": "agent_error", "message": "agent phase exited with "
+                                         f"{agent_run.returncode}: {(agent_run.stderr or agent_run.stdout)[-500:]}"})
+            except DynamicUnavailable as exc:
+                agent_events.append({"type": "agent_error", "message": f"agent phase failed: {exc}"})
         say("Collecting sink, guard, strace and Tetragon evidence")
         tetragon_events = _finish_tetragon_stream(tetragon_stream, pod)
         tetragon_stream = None
         events = [image_event]
         events.extend(_events_from_logs(scan_started, scan_id, pod_ip))
         events.extend(_events_from_pod(pod))
+        events.extend(agent_events)
         events.extend(tetragon_events)
         if execute.returncode:
             events.append({"type": "execution_error", "exit_code": execute.returncode, "timed_out": timed_out,

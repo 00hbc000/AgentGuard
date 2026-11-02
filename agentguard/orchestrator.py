@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -12,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from . import scanners
 from .custom_rules import scan_directory
 from .dynamic import DynamicUnavailable, monitoring_tier, run as run_dynamic, run_demo
 from .gate import decide
@@ -20,7 +22,8 @@ from .models import Finding, ScanResult, ToolRun
 from .normalize import aggregate_severity, normalize_cisco, normalize_nvidia
 
 TOOL_VERSIONS = {"cisco": "2.1.0", "nvidia": "2.12.0", "agentguard": "0.1.0"}
-TIMEOUTS = {"cisco": 300, "nvidia": 180}
+# NVIDIA SkillSpector took ~4.5 min on the 96-file anthropics/skills claude-api skill; override with AGENTGUARD_<TOOL>_TIMEOUT.
+TIMEOUTS = {"cisco": 300, "nvidia": 600}
 
 
 def _command_from_env(name: str) -> list[str] | None:
@@ -77,7 +80,7 @@ def _run_external(tool: str, command: list[str], root: Path, output_dir: Path) -
         args.append("--no-llm")
     try:
         completed = subprocess.run(args, capture_output=True, text=True,
-                                   timeout=TIMEOUTS[tool], check=False)
+                                   timeout=int(os.environ.get(f"AGENTGUARD_{tool.upper()}_TIMEOUT", TIMEOUTS[tool])), check=False)
         raw_report = _parse_json(completed.stdout)
         duration_ms = round((time.perf_counter() - started) * 1000)
         status = "completed" if completed.returncode in {0, 1} and raw_report is not None else "failed"
@@ -105,6 +108,34 @@ def _run_external(tool: str, command: list[str], root: Path, output_dir: Path) -
             tool=tool, tool_version=tool_version, status="failed", command=args,
             exit_code=None, duration_ms=duration_ms, stdout="", stderr="", error=str(exc),
         ), None, []
+
+
+_BLANK_RUN = re.compile(r"(?:[ \t]*\r?\n){51,}")
+_PADDING_NOTE = ("Input contained runs of >50 blank lines (a known hiding trick). NVIDIA SkillSpector's paragraph splitter "
+                 "is quadratic on such input and would time out, so it scanned a copy with those runs collapsed to 20 "
+                 "lines; line numbers in its findings may differ. AgentGuard's native rule AG006 inspects the original.")
+
+
+def _normalized_copy_for_slow_scanners(root: Path, base: Path) -> Path | None:
+    """Return a copy of ``root`` with huge blank-line runs collapsed, or None if no file needs it."""
+    padded: list[Path] = []
+    for path in root.rglob("*"):
+        if path.is_file() and not path.is_symlink() and ".git" not in path.parts and path.stat().st_size < 5_000_000:
+            try:
+                if _BLANK_RUN.search(path.read_text(encoding="utf-8", errors="replace")):
+                    padded.append(path)
+            except OSError:
+                continue
+    if not padded:
+        return None
+    copy = base / "normalized-for-scanners"
+    shutil.rmtree(copy, ignore_errors=True)
+    shutil.copytree(root, copy, symlinks=False, ignore=shutil.ignore_patterns(".git"))
+    for path in padded:
+        target = copy / path.relative_to(root)
+        text = target.read_text(encoding="utf-8", errors="replace")
+        target.write_text(_BLANK_RUN.sub("\n" * 20, text), encoding="utf-8")
+    return copy
 
 
 def _status(findings: list[Finding], tool_runs: list[ToolRun], root: Path) -> str:
@@ -156,17 +187,25 @@ def scan(source: str, *, workspace_base: Path | None = None, include_external: b
     tool_runs: list[ToolRun] = []
     findings: list[Finding] = []
     reports: dict[str, dict[str, Any] | None] = {"cisco": None, "nvidia": None}
-    configured = (("cisco", _command_from_env("AGENTGUARD_CISCO_COMMAND")),
-                 ("nvidia", _command_from_env("AGENTGUARD_NVIDIA_COMMAND")))
+    notes: dict[str, str] = {}
+    configured = (("cisco", scanners.locate("cisco")[0]), ("nvidia", scanners.locate("nvidia")[0]))
     if include_external:
         for tool, command in configured:
             if command is None:
                 tool_runs.append(ToolRun(tool=tool, tool_version=TOOL_VERSIONS[tool], status="skipped",
                                          command=[], exit_code=None, duration_ms=0, stdout="", stderr="",
-                                         error="Not configured"))
+                                         error=scanners.locate(tool)[1]))
                 continue
             say("static", f"Running external scanner: {tool}")
-            run, report, normalized = _run_external(tool, command, root, output_dir or base)
+            scan_root, note = root, None
+            if tool == "nvidia":
+                normalized_root = _normalized_copy_for_slow_scanners(root, base)
+                if normalized_root is not None:
+                    scan_root, note = normalized_root, _PADDING_NOTE
+                    say("static", "Blank-line padding detected: NVIDIA will scan a collapsed copy")
+            run, report, normalized = _run_external(tool, command, scan_root, output_dir or base)
+            if note:
+                notes[tool] = note
             tool_runs.append(run)
             reports[tool] = report
             findings.extend(normalized)
@@ -183,6 +222,8 @@ def scan(source: str, *, workspace_base: Path | None = None, include_external: b
         "cisco": {"status": next((run.status for run in tool_runs if run.tool == "cisco"), "not_requested")},
         "nvidia": {"status": next((run.status for run in tool_runs if run.tool == "nvidia"), "not_requested")},
     }
+    for tool, note in notes.items():
+        stages[tool]["note"] = note
     for run in tool_runs:  # surface real scanner failures instead of hiding them
         if run.status == "failed":
             stages[run.tool]["reason"] = run.error or "scanner failed"
@@ -200,7 +241,8 @@ def scan(source: str, *, workspace_base: Path | None = None, include_external: b
         elif force_dynamic or decision.escalate:
             say("sandbox", "Starting Kubernetes sandbox verification")
             try:
-                dynamic_result = run_dynamic(root, progress=lambda message: say("sandbox", message))
+                dynamic_result = run_dynamic(root, progress=lambda message: say("sandbox", message),
+                                           deep=scan_mode == "deep")
                 findings.extend(dynamic_result.findings)
                 dynamic_payload = dynamic_result.to_dict()
                 if dynamic_result.status == "error":

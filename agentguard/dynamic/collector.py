@@ -295,13 +295,20 @@ def derive_findings(events: list[dict[str, Any]], *, scan_token: str | None = No
     return findings, derived
 
 
+def _coverage_mode(commands: list, agent_actions: list, events: list) -> str:
+    agent_seen = bool(agent_actions) or any(e.get("type") == "agent_error" for e in events)
+    if agent_seen and commands:
+        return "scripted+ollama_agent"
+    return "ollama_agent" if agent_seen else "scripted"
+
+
 def coverage_from_events(events: list[dict[str, Any]]) -> dict[str, Any]:
     plan = next((e for e in events if e.get("type") == "execution_plan"), None)
     commands = [e for e in events if e.get("type") == "skill_command"]
     agent_actions = [e for e in events if e.get("type") == "agent_action"]
     ran_agent = bool(agent_actions) and any(a.get("tool") == "run_python" for a in agent_actions)
     return {
-        "mode": "ollama_agent" if agent_actions or any(e.get("type") == "agent_error" for e in events) else "scripted",
+        "mode": _coverage_mode(commands, agent_actions, events),
         "entrypoint_found": bool(commands) or ran_agent,
         "commands_planned": len(plan.get("commands", [])) if plan else 0,
         "commands_run": len(commands) + sum(1 for a in agent_actions if a.get("tool") == "run_python"),

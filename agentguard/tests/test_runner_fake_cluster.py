@@ -166,3 +166,36 @@ def test_skill_files_are_copied_without_symlinks_or_git_dir(fake_cluster, tmp_pa
     runner.run(skill)
     copied = {p.name for p in (fake_cluster / "skill").rglob("*")}
     assert "SKILL.md" in copied and "link" not in copied and "config" not in copied
+
+
+def test_exported_ollama_env_never_replaces_the_scripted_harness(fake_cluster, monkeypatch):
+    # Regression: a shell with AGENTGUARD_AGENT_MODE=ollama used to disable the guard and run no commands.
+    monkeypatch.setenv("AGENTGUARD_AGENT_MODE", "ollama")
+    monkeypatch.setenv("AGENTGUARD_OLLAMA_URL", "http://127.0.0.1:9")
+    monkeypatch.setenv("AGENTGUARD_OLLAMA_CIDR", "172.19.0.1/32")
+    result = runner.run(SAMPLES / "runtime-exfil-evasive")  # sandbox mode: deep=False
+    assert result.coverage["mode"] == "scripted" and result.coverage["guard_enabled"] is True
+    assert result.coverage["agent_errors"] == 0
+    assert {f.rule_id: f.severity for f in result.findings}["DYN_HONEYPOT_EXFIL"] == "CRITICAL"
+    manifest = (fake_cluster / "pod.yaml").read_text()
+    assert "AGENTGUARD_AGENT_MODE" not in manifest and "OLLAMA" not in manifest
+    assert not any("sandbox-ollama-egress" in c for c in calls(fake_cluster))
+
+
+def test_deep_mode_runs_scripted_harness_then_bounded_agent_without_failing_the_scan(fake_cluster, monkeypatch):
+    monkeypatch.setenv("AGENTGUARD_AGENT_MODE", "ollama")
+    monkeypatch.setenv("AGENTGUARD_OLLAMA_URL", "http://127.0.0.1:9")  # nothing listens: the agent must fail softly
+    monkeypatch.setenv("AGENTGUARD_OLLAMA_CIDR", "172.19.0.1/32")
+    monkeypatch.setenv("AGENTGUARD_AGENT_TIMEOUT", "60")
+    result = runner.run(SAMPLES / "runtime-exfil-evasive", deep=True)
+    assert result.status == "complete", result.error
+    assert {f.rule_id: f.severity for f in result.findings}["DYN_HONEYPOT_EXFIL"] == "CRITICAL"
+    assert result.coverage["commands_run"] >= 1 and result.coverage["guard_enabled"] is True
+    assert result.coverage["mode"] == "scripted+ollama_agent" and result.coverage["agent_errors"] >= 1
+    assert "AGENTGUARD_AGENT_MODE" in (fake_cluster / "pod.yaml").read_text()
+
+
+def test_deep_mode_without_agent_configured_is_just_the_scripted_run(fake_cluster):
+    result = runner.run(SAMPLES / "benign-csv-stats", deep=True)
+    assert result.status == "complete" and result.findings == []
+    assert result.coverage["mode"] == "scripted" and "AGENTGUARD_AGENT_MODE" not in (fake_cluster / "pod.yaml").read_text()
