@@ -33,6 +33,7 @@ outside Deep mode, but a clean shell avoids confusion:
 
 ```bash
 unset AGENTGUARD_AGENT_MODE AGENTGUARD_OLLAMA_URL AGENTGUARD_OLLAMA_CIDR AGENTGUARD_OLLAMA_MODEL
+unset AGENTGUARD_CISCO_COMMAND AGENTGUARD_NVIDIA_COMMAND      # old handoff paths; AgentGuard now finds the scanners itself
 grep -n AGENTGUARD ~/.bashrc ~/.zshrc ~/.profile 2>/dev/null     # CHECK: if exports live here, delete those lines
 env | grep AGENTGUARD                                            # expect: no output
 ```
@@ -194,7 +195,13 @@ It runs five controlled samples through a real Sandbox Scan:
 | `runtime-exfil-external` | HIGH `DYN_EXFIL_ATTEMPT`, never CRITICAL |
 | `runtime-env-dump` | HIGH `DYN_ENV_EXPOSED` |
 
-Last line should be `ALL CHECKS PASSED`. The same expectations pass here with the real in-pod harness (directly, and for the benign and evasive samples through the
+Last line should be `ALL CHECKS PASSED`.
+
+**Observed on the real Kali cluster (kind + Calico + Tetragon):** all five samples passed with monitoring tier `tetragon` and
+sink, Python audit guard, strace and Tetragon all active: `runtime-exfil-sink` and `runtime-exfil-evasive` CRITICAL
+`DYN_HONEYPOT_EXFIL` (verdict `malicious`), `runtime-exfil-external` and `runtime-env-dump` `high_risk`, `benign-csv-stats` `no_findings`.
+The final "no sandbox pods left behind" check initially failed because deleted pods lingered for Kubernetes' 30 s grace period
+(the pod's `sleep` is PID 1 and ignores SIGTERM); pods now use a 1 s grace period and the check waits up to 60 s. The same expectations pass here with the real in-pod harness (directly, and for the benign and evasive samples through the
 full runner behind a fake `kubectl`, including with `AGENTGUARD_AGENT_MODE=ollama` exported). The earlier failure on your machine was that exported variable replacing
 the scripted harness with the Ollama agent, which is fixed.
 

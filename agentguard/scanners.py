@@ -31,19 +31,26 @@ def locate(tool: str) -> tuple[list[str] | None, str]:
     """Return (command, source). ``command`` is None when the scanner cannot be found."""
     spec = SCANNERS[tool]
     explicit = os.environ.get(spec["env"], "").strip()
+    stale = ""
     if explicit:
-        return shlex.split(explicit), f"env {spec['env']}"
+        command = shlex.split(explicit)
+        if shutil.which(command[0]) is not None or Path(command[0]).is_file():
+            return command, f"env {spec['env']}"
+        # A leftover export from an old setup must not mask a working install: ignore it, but say so.
+        stale = f" (ignored {spec['env']}: '{command[0]}' does not exist; unset it)"
+        if os.environ.get("AGENTGUARD_DISABLE_SCANNER_DISCOVERY"):
+            return command, f"env {spec['env']}"  # hermetic/explicit mode: report the broken command as-is
     if os.environ.get("AGENTGUARD_DISABLE_SCANNER_DISCOVERY"):
         return None, "not configured"
     for root in _venv_roots():
         for name in spec["venv"]:
             candidate = root / name / "bin" / spec["exe"]
             if candidate.is_file() and os.access(candidate, os.X_OK):
-                return [str(candidate), *spec["args"]], f"venv {candidate.parent.parent}"
+                return [str(candidate), *spec["args"]], f"venv {candidate.parent.parent}" + stale
     found = shutil.which(spec["exe"])
     if found:
-        return [found, *spec["args"]], "PATH"
-    return None, "not installed (run scripts/install_scanners.sh)"
+        return [found, *spec["args"]], "PATH" + stale
+    return None, "not installed (run scripts/install_scanners.sh)" + stale
 
 
 def status() -> dict[str, dict[str, object]]:

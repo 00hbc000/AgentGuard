@@ -251,6 +251,7 @@ metadata:
 spec:
   restartPolicy: Never
   activeDeadlineSeconds: 300
+  terminationGracePeriodSeconds: 1
   automountServiceAccountToken: false
   securityContext:
     runAsNonRoot: true
@@ -497,7 +498,7 @@ def run(root: Path, progress: Callable[[str], None] | None = None, deep: bool = 
     finally:
         if tetragon_stream is not None:
             _finish_tetragon_stream(tetragon_stream, pod)
-        _run(["kubectl", "-n", namespace, "delete", "pod", pod, "--ignore-not-found=true", "--wait=false"], timeout=30)
+        _run(["kubectl", "-n", namespace, "delete", "pod", pod, "--ignore-not-found=true", "--wait=false", "--grace-period=1"], timeout=30)
 
 
 def run_demo(root: Path) -> DynamicResult:

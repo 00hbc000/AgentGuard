@@ -42,8 +42,11 @@ def test_discovery_order_and_disable_switch(tmp_path, monkeypatch):
     command, source = scanners.locate("nvidia")
     assert command == [str(exe), "scan"] and source.startswith("venv")
     assert scanners.locate("cisco")[0] is None  # not installed -> skipped, never an error
-    monkeypatch.setenv("AGENTGUARD_NVIDIA_COMMAND", "/custom/skillspector scan")  # explicit env wins
-    assert scanners.locate("nvidia") == (["/custom/skillspector", "scan"], "env AGENTGUARD_NVIDIA_COMMAND")
+    custom = tmp_path / "custom-skillspector"
+    custom.write_text("#!/bin/sh\n")
+    custom.chmod(0o755)
+    monkeypatch.setenv("AGENTGUARD_NVIDIA_COMMAND", f"{custom} scan")  # explicit env (that exists) wins
+    assert scanners.locate("nvidia") == ([str(custom), "scan"], "env AGENTGUARD_NVIDIA_COMMAND")
     monkeypatch.delenv("AGENTGUARD_NVIDIA_COMMAND")
     monkeypatch.setenv("AGENTGUARD_DISABLE_SCANNER_DISCOVERY", "1")
     assert scanners.locate("nvidia")[0] is None
@@ -95,3 +98,17 @@ def test_nvidia_gets_a_collapsed_copy_when_input_is_padded_with_blank_lines(tmp_
     assert "collapsed" in result.stages["nvidia"]["note"]
     assert any(f.rule_id == "AG006" for f in result.findings)  # native rule still inspected the original
     assert len((skill / "scripts" / "run.py").read_text().splitlines()) > 100_000  # original untouched
+
+
+def test_stale_env_command_does_not_mask_a_working_install(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGENTGUARD_DISABLE_SCANNER_DISCOVERY")
+    venvs = tmp_path / "venvs"
+    exe = venvs / "cisco" / "bin" / "skill-scanner"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    monkeypatch.setenv("AGENTGUARD_VENV_DIR", str(venvs))
+    monkeypatch.setenv("AGENTGUARD_CISCO_COMMAND", "/old/path/cisco-skill-scanner/bin/skill-scanner scan")  # does not exist
+    command, source = scanners.locate("cisco")
+    assert command == [str(exe), "scan"] and "ignored AGENTGUARD_CISCO_COMMAND" in source
+    assert scanners.status()["cisco"]["available"] is True

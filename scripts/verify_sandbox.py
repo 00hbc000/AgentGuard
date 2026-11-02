@@ -13,6 +13,7 @@ import argparse
 import json
 import shutil
 import subprocess
+import time
 import sys
 import tempfile
 from pathlib import Path
@@ -90,10 +91,17 @@ def main() -> int:
             check(not static, "static analysis alone found nothing (that is the point of this sample)")
         print("      monitoring tier: %s | monitors: %s" % (report["dynamic"]["monitoring_tier"], report["dynamic"]["monitors"]))
     try:
-        pods = subprocess.run(["kubectl", "-n", "agentguard-sandbox", "get", "pods", "-l",
-                               "agentguard.io/role=skill-sandbox", "-o", "name"],
-                              capture_output=True, text=True, check=False)
-        check(not pods.stdout.strip(), "no sandbox pods left behind", pods.stdout.strip())
+        # Deleted pods take a moment to disappear (termination is asynchronous), so wait up to 60 s
+        # before calling it a leak.
+        deadline = time.time() + 60
+        while True:
+            pods = subprocess.run(["kubectl", "-n", "agentguard-sandbox", "get", "pods", "-l",
+                                   "agentguard.io/role=skill-sandbox", "-o", "name"],
+                                  capture_output=True, text=True, check=False)
+            if not pods.stdout.strip() or time.time() > deadline:
+                break
+            time.sleep(2)
+        check(not pods.stdout.strip(), "no sandbox pods left behind (after waiting up to 60 s)", pods.stdout.strip())
     except OSError as exc:
         check(False, "could check for leftover sandbox pods", str(exc))
     print("\n%s" % ("ALL CHECKS PASSED" if not failures else "%d CHECK(S) FAILED" % failures))
