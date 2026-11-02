@@ -33,3 +33,11 @@ def test_run_python_rejects_conflicting_aliases():
             "path": "/skill/run.py",
             "script": "/skill/other.py",
         })
+
+
+def test_run_python_rejects_invented_generic_arguments():
+    with pytest.raises(ValueError, match="unsupported arguments"):
+        _normalize_arguments("run_python", {
+            "input": "skill/SKILL.md",
+            "python_file": "/path/to/your/script.py",
+        })

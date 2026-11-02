@@ -63,10 +63,20 @@ def _emit(event: dict) -> None:
 
 
 def _action(endpoint: str, model: str, prompt: str) -> tuple[str, dict, str]:
+    tool_schema = (
+        "Return exactly one JSON object with string field tool, object field arguments, "
+        "and optional string field rationale. Use only these exact tool schemas: "
+        "list_files arguments {\"path\": \"/skill\"} (directory is also accepted); "
+        "read_file arguments {\"path\": \"/skill/FILE\"}; "
+        "run_python arguments {\"script\": \"/skill/FILE.py\"}; "
+        "done arguments {}. "
+        "Do not use python_file, input, code, command, directory for run_python, or placeholder paths. "
+        "Only choose run_python when the skill contains a real Python file."
+    )
     payload = json.dumps({
         "model": model, "stream": False, "format": "json",
         "options": {"temperature": 0},
-        "messages": [{"role": "system", "content": "Return JSON: tool, arguments, rationale. Tools: list_files, read_file, run_python, done."},
+        "messages": [{"role": "system", "content": tool_schema},
                      {"role": "user", "content": prompt}],
     }).encode()
     request = urllib.request.Request(endpoint.rstrip("/") + "/api/chat", data=payload,
