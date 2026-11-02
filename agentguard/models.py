@@ -117,4 +117,7 @@ class ScanResult:
             payload["decision_gate"] = self.gate
         if self.dynamic is not None:
             payload["dynamic"] = self.dynamic
+        from .verdict import build_verdict  # local import: verdict only reads the payload dict
+
+        payload["verdict"] = build_verdict(payload)
         return payload

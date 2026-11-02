@@ -8,11 +8,14 @@ from .models import Finding, Location
 _CREDENTIAL = re.compile(
     r"(?:~[/\\]?\.ssh/id_(?:rsa|ed25519)|~[/\\]?\.aws[/\\]credentials|"
     r"~[/\\]?\.config[/\\]gcloud|os\.environ\s*\[[^]]*(?:AWS_|GCP_|AZURE_)|"
-    r"\.netrc|\.pgpass|\.docker[/\\]config\.json)", re.I,
+    r"\.netrc|\.pgpass|\.docker[/\\]config\.json|"
+    r"\.aws[/\\]credentials|\.ssh[/\\]id_(?:rsa|ed25519|ecdsa)|\.git-credentials|"
+    r"\.config[/\\]gh[/\\]hosts\.yml|/etc/shadow)", re.I,
 )
 _NETWORK = re.compile(
-    r"(?:requests\.(?:post|put)|urllib\.request\.urlopen|http\.client|"
-    r"socket\.send|fetch\s*\(|axios\.post)", re.I,
+    r"(?:requests\.(?:post|put)|urllib\.request\.urlopen|urllib\.request\.Request|\burlopen\s*\(|"
+    r"http\.client|httpx\.(?:post|put)|socket\.send|socket\.create_connection|"
+    r"fetch\s*\(|axios\.post|curl[^\n]*\s(?:-d|--data\S*|-F|-T|--upload-file)\b)", re.I,
 )
 _OBFUSCATION = re.compile(
     r"(?:base64\.b64encode|base64\.b64decode|codecs\.encode[^\n]{0,160}['\"]hex|"
@@ -41,9 +44,11 @@ def _text_files(root: Path):
 
 
 def credential_chain(root: Path) -> list[Finding]:
+    from .extra_rules import _ENV_HARVEST  # bulk env access counts as a credential source
+
     results = []
     for path, text in _text_files(root):
-        source = _CREDENTIAL.search(text)
+        source = _CREDENTIAL.search(text) or _ENV_HARVEST.search(text)
         sink = _NETWORK.search(text)
         if not source or not sink:
             continue
@@ -130,5 +135,8 @@ def incomplete_scan(root: Path, *, nvidia_report: dict | None, cisco_report: dic
 
 def scan_directory(root: Path, *, nvidia_report: dict | None = None,
                    cisco_report: dict | None = None) -> list[Finding]:
+    from .extra_rules import extra_rules  # local import: extra_rules builds on this module
+
     return (credential_chain(root) + obfuscation(root) + malformed_frontmatter(root)
+            + extra_rules(root)
             + incomplete_scan(root, nvidia_report=nvidia_report, cisco_report=cisco_report))

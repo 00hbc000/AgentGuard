@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import ipaddress
 import subprocess
@@ -156,6 +157,85 @@ def _github_clone_spec(source: str) -> tuple[str, str | None, str | None] | None
     return clone_url, branch, subpath
 
 
+def _run_git(args: list[str], *, timeout: int = 180) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "protocol.file.allow=never", *args],
+                          capture_output=True, text=True, timeout=timeout, check=False,
+                          env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+
+
+def _git_clone(clone_url: str, branch: str | None, subpath: str | None, target: Path) -> None:
+    """Shallow clone. With a subpath only that directory's blobs are downloaded."""
+    base = ["clone", "--depth", "1", "--no-recurse-submodules", "--no-checkout"]
+    if branch:
+        base.extend(["--branch", branch])
+    if subpath:
+        sparse = _run_git([*base, "--filter=blob:none", "--sparse", "--", clone_url, str(target)])
+        if sparse.returncode == 0:
+            pattern = _run_git(["-C", str(target), "sparse-checkout", "set", "--", subpath])
+            checkout = _run_git(["-C", str(target), "checkout", "--force", "HEAD", "--"])
+            if pattern.returncode == 0 and checkout.returncode == 0:
+                return
+        shutil.rmtree(target, ignore_errors=True)  # fall back to a plain shallow clone
+    completed = _run_git([*base, "--", clone_url, str(target)])
+    if completed.returncode:
+        raise IngestionError(completed.stderr.strip() or "Git clone failed")
+    checkout = _run_git(["-C", str(target), "checkout", "--force", "HEAD", "--"])
+    if checkout.returncode:
+        raise IngestionError(checkout.stderr.strip() or "Git checkout failed")
+
+
+def _remove_symlinks(root: Path) -> int:
+    """Cloned repositories may contain symlinks that point outside the checkout; drop them."""
+    removed = 0
+    for path in root.rglob("*"):
+        if ".git" in path.relative_to(root).parts:
+            continue
+        if path.is_symlink():
+            path.unlink()
+            removed += 1
+    return removed
+
+
+def list_skills(source: str, workspace: Path) -> list[dict[str, str]]:
+    """Enumerate skills (directories holding SKILL.md) in a remote repository without downloading blobs.
+
+    Returns ``[{"name", "path", "url"}]`` where ``url`` is a ``/tree/<branch>/<path>`` link
+    that :func:`materialize` can scan individually.
+    """
+    spec = _git_clone_spec(source)
+    if spec is None:
+        raise IngestionError("Batch expansion needs a public GitHub, GitLab, or Bitbucket repository URL")
+    _validate_remote_url(source)
+    clone_url, host, branch, subpath = spec
+    target = workspace / "listing"
+    base = ["clone", "--depth", "1", "--filter=blob:none", "--no-checkout", "--no-recurse-submodules"]
+    if branch:
+        base.extend(["--branch", branch])
+    completed = _run_git([*base, "--", clone_url, str(target)])
+    if completed.returncode:
+        raise IngestionError(completed.stderr.strip() or "Git clone failed")
+    resolved_branch = branch or _run_git(["-C", str(target), "rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip() or "main"
+    tree = _run_git(["-C", str(target), "ls-tree", "-r", "--name-only", "HEAD"])
+    if tree.returncode:
+        raise IngestionError(tree.stderr.strip() or "Could not list repository files")
+    owner_repo = clone_url[len(f"https://{host}/"):-len(".git")]
+    skills = []
+    for name in sorted(tree.stdout.splitlines()):
+        pure = PurePosixPath(name)
+        if pure.name.lower() != "skill.md":
+            continue
+        directory = pure.parent.as_posix()
+        if subpath and not (directory == subpath or directory.startswith(subpath.rstrip("/") + "/")):
+            continue
+        marker = "tree" if host != "gitlab.com" else "-/tree"
+        skills.append({
+            "name": pure.parent.name or owner_repo.rsplit("/", 1)[-1],
+            "path": "" if directory == "." else directory,
+            "url": f"https://{host}/{owner_repo}/{marker}/{resolved_branch}" + ("" if directory == "." else f"/{directory}"),
+        })
+    return skills
+
+
 def materialize(source: str, workspace: Path) -> tuple[Path, dict[str, object]]:
     """Materialize a local directory, archive, Git URL, or downloadable archive."""
     workspace.mkdir(parents=True, exist_ok=True)
@@ -188,33 +268,22 @@ def materialize(source: str, workspace: Path) -> tuple[Path, dict[str, object]]:
     git_spec = _git_clone_spec(source)
     if git_spec:
         clone_url, _host, branch, subpath = git_spec
+        if subpath and any(part in {"", ".", ".."} for part in PurePosixPath(subpath).parts):
+            raise IngestionError("Git repository subpath is unsafe")
         target = workspace / "skill"
-        command = [
-            "git", "-c", "core.hooksPath=/dev/null", "clone", "--depth", "1",
-            "--no-recurse-submodules", "--no-checkout",
-        ]
-        if branch:
-            command.extend(["--branch", branch])
-        command.extend(["--", clone_url, str(target)])
-        completed = subprocess.run(command, capture_output=True, text=True, timeout=120, check=False)
-        if completed.returncode:
-            raise IngestionError(completed.stderr.strip() or "Git clone failed")
-        checkout = subprocess.run(
-            ["git", "-C", str(target), "checkout", "--force", "HEAD", "--"],
-            capture_output=True, text=True, timeout=120, check=False,
-        )
-        if checkout.returncode:
-            raise IngestionError(checkout.stderr.strip() or "Git checkout failed")
+        _git_clone(clone_url, branch, subpath, target)
+        removed_symlinks = _remove_symlinks(target)
         if subpath:
-            if any(part in {"", ".", ".."} for part in PurePosixPath(subpath).parts):
-                raise IngestionError("Git repository subpath is unsafe")
             selected = (target / Path(*PurePosixPath(subpath).parts)).resolve()
             if target.resolve() not in selected.parents or not selected.is_dir():
                 raise IngestionError(f"GitHub tree path not found: {subpath}")
             target = selected
         skill_dirs = sorted({path.parent for path in target.rglob("SKILL.md") if path.is_file()})
         if len(skill_dirs) > 1 and subpath is None:
-            raise IngestionError("Repository contains multiple skills; provide a /tree/<ref>/skills/<name> URL")
+            raise IngestionError(
+                f"Repository contains {len(skill_dirs)} skills; scan one with a /tree/<ref>/<skill-dir> URL "
+                "or use the dashboard's batch mode, which expands a repository into its skills"
+            )
         commit = subprocess.run(
             ["git", "-C", str(workspace / "skill"), "rev-parse", "HEAD"],
             capture_output=True, text=True, timeout=30, check=False,
@@ -225,8 +294,9 @@ def materialize(source: str, workspace: Path) -> tuple[Path, dict[str, object]]:
             "clone_url": clone_url,
             "branch": branch or "default",
             "subpath": subpath,
-            "files": sum(1 for _ in target.rglob("*") if _.is_file()),
+            "files": sum(1 for _ in target.rglob("*") if _.is_file() and ".git" not in _.relative_to(target).parts),
             "commit_sha": commit,
+            "symlinks_removed": removed_symlinks,
         }
 
     raise IngestionError("Source must be a local directory, archive, GitHub URL, or archive URL")

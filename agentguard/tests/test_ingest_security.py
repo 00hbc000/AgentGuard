@@ -31,3 +31,13 @@ def test_multi_skill_repository_is_rejected_for_unselected_remote(tmp_path, monk
     (source / "two" / "SKILL.md").write_text("---\nname: two\ndescription: two\n---\n", encoding="utf-8")
     with pytest.raises(IngestionError):
         materialize(str(source), tmp_path / "workspace")
+
+
+def test_cloned_repository_symlinks_are_removed(tmp_path):
+    from agentguard.ingest import _remove_symlinks
+
+    (tmp_path / "SKILL.md").write_text("---\nname: x\ndescription: x\n---\n")
+    (tmp_path / "leak").symlink_to("/etc/passwd")
+    (tmp_path / ".git").mkdir()
+    assert _remove_symlinks(tmp_path) == 1
+    assert not (tmp_path / "leak").is_symlink() and (tmp_path / "SKILL.md").exists()

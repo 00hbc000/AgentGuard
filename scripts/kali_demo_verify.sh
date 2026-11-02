@@ -17,7 +17,7 @@ command -v skillspector || true
 
 echo "== Static + forced dynamic scan =="
 python -m agentguard.cli scan "$source" \
-  --force-dynamic \
+  --mode sandbox \
   --output "$output"
 
 report="$(find "$output" -maxdepth 1 -name '*.json' ! -name '*.meta.json' -print | sort | head -n 1)"

@@ -11,14 +11,20 @@ class GateDecision:
     reason: str
 
 
-def decide(findings: list[Finding], *, llm_verdict: str | None = None) -> GateDecision:
+def decide(findings: list[Finding], *, llm_verdict: str | None = None,
+           has_executable_content: bool = False) -> GateDecision:
     """Route static results to the dynamic stage without executing skill code.
 
     ``llm_verdict`` is intentionally unused until an LLM review stage exists.
     It is kept as the integration hook for that future stage.
     """
     if not findings or all(item.severity == "INFO" for item in findings):
-        return GateDecision(False, "No findings above INFO; dynamic analysis skipped.")
+        if has_executable_content:
+            # Static analysis cannot prove an executable skill is clean (hidden payloads, runtime-built
+            # code), so a clean static result with scripts still gets runtime verification.
+            return GateDecision(True, "No static findings, but the skill ships executable scripts; "
+                                      "runtime verification recommended.")
+        return GateDecision(False, "No findings above INFO and no executable content; dynamic analysis skipped.")
 
     categories = [item.category.casefold() for item in findings]
     if any("obfuscat" in category for category in categories):

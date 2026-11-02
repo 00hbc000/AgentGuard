@@ -9,6 +9,12 @@ from pathlib import Path
 
 import urllib.request
 
+try:  # package import (unit tests) or sibling-module import (inside the pod)
+    from . import canary, execution
+except ImportError:  # pragma: no cover
+    import canary  # type: ignore
+    import execution  # type: ignore
+
 
 _MAX_PATH_LENGTH = 4096
 _MAX_FILE_BYTES = 64 * 1024
@@ -108,14 +114,38 @@ def _tool(action: str, arguments: dict) -> tuple[int, str]:
             raise ValueError("read_file target exceeds the size limit")
         result = subprocess.run(["sed", "-n", "1,240p", arguments["path"]], capture_output=True, text=True, timeout=10)
     elif action == "run_python":
-        result = subprocess.run(["python", arguments["script"]], cwd="/skill", capture_output=True, text=True, timeout=30)
+        token = os.environ.get("AGENTGUARD_SCAN_TOKEN", "")
+        outcome = execution.run_command(
+            ["python", arguments["script"]], execution.skill_env(token), timeout=30,
+            trace=execution.strace_available(),
+        )
+        if outcome["timed_out"]:
+            raise ValueError("run_python exceeded the 30 second limit")
+        output = (outcome["stdout"] + outcome["stderr"])[:16_384]
+        return (outcome["exit_code"] if outcome["exit_code"] is not None else 1), output
     else:
         raise ValueError(f"Unknown tool: {action}")
     output = (result.stdout + result.stderr)[:16_384]
     return result.returncode, output
 
 
+def _flush_trace() -> None:
+    """Convert the strace log of any run_python calls into honeypot/network events."""
+    try:
+        for event in execution.parse_strace(execution.TRACE_FILE.read_text(encoding="utf-8", errors="replace")):
+            _emit(event)
+    except OSError:
+        pass
+
+
 def main() -> int:
+    try:
+        return _main()
+    finally:
+        _flush_trace()
+
+
+def _main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--max-turns", type=int, default=8)
     args = parser.parse_args()
@@ -147,7 +177,8 @@ def main() -> int:
             code, output = _tool(tool, arguments)
             _emit({"type": "agent_action", "turn": turn + 1, "tool": tool,
                    "arguments": arguments, "rationale": rationale,
-                   "exit_code": code, "output": output})
+                   "exit_code": code, "output": output,
+                   "canary_in_output": canary.find_canaries(output)})
             context = f"Previous tool output:\n{output}\nChoose the next allowlisted action or return tool=done."
         except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
             error = str(exc)

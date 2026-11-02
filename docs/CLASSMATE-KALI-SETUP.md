@@ -1,5 +1,7 @@
 # AgentGuard on Kali Linux
 
+> **Superseded** for sandbox work by [KALI-QUICKSTART.md](KALI-QUICKSTART.md) (new test branch, sandbox images, dashboard test plan). The local-path dashboard step below no longer applies: use the sample library instead.
+
 Use this guide to get the complete AgentGuard project and test a real GitHub skill repository.
 
 ## 1. Install prerequisites

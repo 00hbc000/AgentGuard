@@ -10,7 +10,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .custom_rules import scan_directory
 from .dynamic import DynamicUnavailable, monitoring_tier, run as run_dynamic, run_demo
@@ -117,10 +117,31 @@ def _status(findings: list[Finding], tool_runs: list[ToolRun], root: Path) -> st
     return "complete" if (root / "SKILL.md").is_file() else "incomplete"
 
 
+def _has_executable_content(root: Path) -> bool:
+    suffixes = {".py", ".sh", ".bash", ".js", ".mjs", ".ts", ".rb", ".pl", ".ps1"}
+    return any(path.is_file() and path.suffix.lower() in suffixes and ".git" not in path.parts
+               for path in root.rglob("*"))
+
+
+Progress = Callable[[str, str], None]
+
+
 def scan(source: str, *, workspace_base: Path | None = None, include_external: bool = True,
          output_dir: Path | None = None, dynamic: bool = False,
          force_dynamic: bool = False, demo_dynamic: bool = False,
-         scan_mode: str | None = None) -> ScanResult:
+         scan_mode: str | None = None, progress: Progress | None = None) -> ScanResult:
+    """Run ingestion, static analysis, the decision gate and (optionally) the sandbox.
+
+    ``progress(stage, message)`` is called as each stage starts so callers (CLI, dashboard)
+    can show real progress.
+    """
+    def say(stage: str, message: str) -> None:
+        if progress is not None:
+            try:
+                progress(stage, message)
+            except Exception:  # progress reporting must never break a scan
+                pass
+
     if scan_mode is not None:
         if scan_mode not in {"quick", "sandbox", "deep"}:
             raise ValueError("scan_mode must be quick, sandbox, or deep")
@@ -130,6 +151,7 @@ def scan(source: str, *, workspace_base: Path | None = None, include_external: b
     created_at = datetime.now(timezone.utc).isoformat()
     base = workspace_base or Path(tempfile.mkdtemp(prefix="agentguard-run-"))
     base.mkdir(parents=True, exist_ok=True)
+    say("ingestion", "Fetching and validating the skill (nothing is executed)")
     root, ingestion = materialize(source, base)
     tool_runs: list[ToolRun] = []
     findings: list[Finding] = []
@@ -143,10 +165,12 @@ def scan(source: str, *, workspace_base: Path | None = None, include_external: b
                                          command=[], exit_code=None, duration_ms=0, stdout="", stderr="",
                                          error="Not configured"))
                 continue
+            say("static", f"Running external scanner: {tool}")
             run, report, normalized = _run_external(tool, command, root, output_dir or base)
             tool_runs.append(run)
             reports[tool] = report
             findings.extend(normalized)
+    say("static", "Running AgentGuard native rules (AG001-AG011)")
     native = scan_directory(root, nvidia_report=reports["nvidia"], cisco_report=reports["cisco"])
     findings.extend(native)
     status = _status(findings, tool_runs if include_external else [], root)
@@ -155,26 +179,36 @@ def scan(source: str, *, workspace_base: Path | None = None, include_external: b
     stages = {
         "mode": {"status": scan_mode or ("sandbox" if force_dynamic else "quick")},
         "ingestion": {"status": "complete", "details": ingestion},
-        "native": {"status": "complete"},
+        "native": {"status": "complete", "findings": len(native)},
         "cisco": {"status": next((run.status for run in tool_runs if run.tool == "cisco"), "not_requested")},
         "nvidia": {"status": next((run.status for run in tool_runs if run.tool == "nvidia"), "not_requested")},
     }
+    for run in tool_runs:  # surface real scanner failures instead of hiding them
+        if run.status == "failed":
+            stages[run.tool]["reason"] = run.error or "scanner failed"
     if dynamic or force_dynamic or demo_dynamic:
-        decision = decide(findings)
-        gate_payload = {"escalate": decision.escalate, "reason": decision.reason}
+        say("gate", "Deciding whether runtime verification is needed")
+        decision = decide(findings, has_executable_content=_has_executable_content(root))
+        gate_payload = {"escalate": decision.escalate, "reason": decision.reason,
+                        "forced": bool(force_dynamic or demo_dynamic)}
         if demo_dynamic:
             dynamic_result = run_demo(root)
             findings.extend(dynamic_result.findings)
             dynamic_payload = dynamic_result.to_dict()
-            stages["dynamic"] = {"status": "complete"}
+            stages["dynamic"] = {"status": "complete", "synthetic": True}
             status = "partial" if status == "partial" else "complete"
         elif force_dynamic or decision.escalate:
+            say("sandbox", "Starting Kubernetes sandbox verification")
             try:
-                dynamic_result = run_dynamic(root)
+                dynamic_result = run_dynamic(root, progress=lambda message: say("sandbox", message))
                 findings.extend(dynamic_result.findings)
                 dynamic_payload = dynamic_result.to_dict()
-                stages["dynamic"] = {"status": "complete"}
-                status = "partial" if status == "partial" else "complete"
+                if dynamic_result.status == "error":
+                    stages["dynamic"] = {"status": "failed", "reason": dynamic_result.error}
+                    status = "error"
+                else:
+                    stages["dynamic"] = {"status": "complete", "coverage": dynamic_result.coverage}
+                    status = "partial" if status == "partial" else "complete"
             except Exception as exc:
                 dynamic_payload = {
                     "status": "error",
@@ -182,6 +216,9 @@ def scan(source: str, *, workspace_base: Path | None = None, include_external: b
                     "finding_count": 0,
                     "findings": [],
                     "events": [],
+                    "evidence_counts": {},
+                    "coverage": {},
+                    "monitors": {},
                     "error": str(exc),
                 }
                 status = "error"
@@ -193,14 +230,18 @@ def scan(source: str, *, workspace_base: Path | None = None, include_external: b
                 "finding_count": 0,
                 "findings": [],
                 "events": [],
+                "evidence_counts": {},
+                "coverage": {},
+                "monitors": {},
                 "error": None,
             }
             stages["dynamic"] = {"status": "skipped", "reason": "Decision gate did not escalate"}
+    say("report", "Building report")
     return ScanResult(scan_id=scan_id, source=source, materialized_path=str(root),
                       created_at=created_at, findings=findings, tool_runs=tool_runs,
                       ingestion=ingestion, scan_status=status,
                       aggregate_severity=aggregate_severity(findings),
-                      gate=gate_payload,                       dynamic=dynamic_payload, stages=stages)
+                      gate=gate_payload, dynamic=dynamic_payload, stages=stages)
 
 
 def write_result(result: ScanResult, output_dir: Path) -> Path:
@@ -223,7 +264,12 @@ def write_result(result: ScanResult, output_dir: Path) -> Path:
     return path
 
 
-def scan_all(source_dir: str, output_dir: Path, *, include_external: bool = True) -> list[Path]:
+def scan_all(source_dir: str, output_dir: Path, *, include_external: bool = True,
+             scan_mode: str | None = None) -> list[Path]:
+    """Scan every skill directory/archive in ``source_dir``.
+
+    One bad input does not abort the batch: it gets ``<name>.error.json`` and the rest continue.
+    """
     root = Path(source_dir)
     if not root.is_dir():
         raise IngestionError(f"Input directory does not exist: {source_dir}")
@@ -231,8 +277,12 @@ def scan_all(source_dir: str, output_dir: Path, *, include_external: bool = True
     results = []
     for path in paths:
         try:
-            result = scan(str(path), include_external=include_external, output_dir=output_dir)
+            result = scan(str(path), include_external=include_external, output_dir=output_dir, scan_mode=scan_mode)
             results.append(write_result(result, output_dir))
-        except IngestionError:
-            raise
+        except (IngestionError, ValueError, OSError) as exc:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            error_path = output_dir / f"{path.stem}.error.json"
+            error_path.write_text(json.dumps({"source": str(path), "scan_status": "error", "error": str(exc)}, indent=2),
+                                  encoding="utf-8")
+            results.append(error_path)
     return results

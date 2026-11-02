@@ -1,5 +1,11 @@
 # AgentGuard — Project Handoff
 
+> **Correction (added later).** `csv-summarizer` from `trailofbits/overtly-malicious-skills` is **malicious** (it dumps
+> `os.environ` hidden behind ~100,000 blank lines), so it is not a benign control. AgentGuard now flags it (AG005 + AG006).
+> Use `samples/benign-csv-stats`, `anthropics/skills` entries or Cisco's `safe-skills/simple-math` as controls; all are in the
+> dashboard sample library. Current setup instructions: [KALI-QUICKSTART.md](KALI-QUICKSTART.md).
+
+
 **Project:** AgentGuard  
 **Repository:** `00hbc000/AgentGuard`  
 **Branch:** `feature/dynamic-analysis`  
