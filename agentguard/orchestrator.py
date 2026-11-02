@@ -112,9 +112,15 @@ def _status(findings: list[Finding], tool_runs: list[ToolRun], root: Path) -> st
         return "complete" if (root / "SKILL.md").is_file() else "incomplete"
     if all(run.status == "failed" for run in tool_runs):
         return "error"
-    if any(run.status in {"failed", "skipped"} for run in tool_runs):
+    if any(run.status == "failed" for run in tool_runs):
         return "partial"
-    return "complete" if any(run.status == "completed" for run in tool_runs) else "incomplete"
+    unavailable_optional = [
+        run for run in tool_runs
+        if run.status == "skipped" and run.error != "Not configured"
+    ]
+    if unavailable_optional:
+        return "partial"
+    return "complete" if (root / "SKILL.md").is_file() else "incomplete"
 
 
 def scan(source: str, *, workspace_base: Path | None = None, include_external: bool = True,
