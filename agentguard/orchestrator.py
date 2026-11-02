@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import tempfile
 import time
@@ -27,6 +28,24 @@ def _command_from_env(name: str) -> list[str] | None:
     return shlex.split(value) if value else None
 
 
+def _resolve_command(command: list[str]) -> tuple[list[str], str]:
+    executable = shutil.which(command[0])
+    if executable is None and Path(command[0]).is_file():
+        executable = str(Path(command[0]).resolve())
+    if executable is None:
+        raise FileNotFoundError(f"Scanner executable not found: {command[0]}")
+    return [executable, *command[1:]], executable
+
+
+def _scanner_version(executable: str) -> str:
+    try:
+        result = subprocess.run([executable, "--version"], capture_output=True, text=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
+    text = (result.stdout or result.stderr).strip().splitlines()
+    return text[0][:200] if text else "unknown"
+
+
 def _parse_json(stdout: str) -> dict[str, Any] | None:
     candidates = [stdout.strip()]
     candidates.extend(line.strip() for line in stdout.splitlines() if line.strip().startswith("{"))
@@ -43,6 +62,14 @@ def _parse_json(stdout: str) -> dict[str, Any] | None:
 def _run_external(tool: str, command: list[str], root: Path, output_dir: Path) -> tuple[ToolRun, dict[str, Any] | None, list[Finding]]:
     started_at = datetime.now(timezone.utc)
     started = time.perf_counter()
+    try:
+        command, executable = _resolve_command(command)
+    except FileNotFoundError as exc:
+        return ToolRun(
+            tool=tool, tool_version="unknown", status="skipped", command=command,
+            exit_code=None, duration_ms=0, stdout="", stderr="", error=str(exc),
+        ), None, []
+    tool_version = _scanner_version(executable)
     args = [*command, str(root), "--format", "json"]
     if tool == "cisco":
         args.append("--use-behavioral")
@@ -53,26 +80,29 @@ def _run_external(tool: str, command: list[str], root: Path, output_dir: Path) -
                                    timeout=TIMEOUTS[tool], check=False)
         raw_report = _parse_json(completed.stdout)
         duration_ms = round((time.perf_counter() - started) * 1000)
-        status = "completed" if raw_report is not None else "failed"
+        status = "completed" if completed.returncode in {0, 1} and raw_report is not None else "failed"
         run = ToolRun(
-            tool=tool, tool_version=TOOL_VERSIONS[tool], status=status, command=args,
+            tool=tool, tool_version=tool_version, status=status, command=args,
             exit_code=completed.returncode, duration_ms=duration_ms,
             stdout=completed.stdout, stderr=completed.stderr, raw_report=raw_report,
-            error=None if raw_report is not None else "Scanner did not emit a JSON object",
+            error=None if status == "completed" else (
+                f"Scanner exited with code {completed.returncode}" if raw_report is not None
+                else "Scanner did not emit a JSON object"
+            ),
         )
-        normalized = normalize_cisco(raw_report, TOOL_VERSIONS[tool]) if tool == "cisco" and raw_report else normalize_nvidia(raw_report or {}, TOOL_VERSIONS[tool]) if tool == "nvidia" and raw_report else []
+        normalized = normalize_cisco(raw_report, tool_version) if tool == "cisco" and raw_report else normalize_nvidia(raw_report or {}, tool_version) if tool == "nvidia" and raw_report else []
         return run, raw_report, normalized
     except subprocess.TimeoutExpired as exc:
         duration_ms = round((time.perf_counter() - started) * 1000)
         return ToolRun(
-            tool=tool, tool_version=TOOL_VERSIONS[tool], status="failed", command=args,
+            tool=tool, tool_version=tool_version, status="failed", command=args,
             exit_code=None, duration_ms=duration_ms,
             stdout=exc.stdout or "", stderr=exc.stderr or "", error="timeout",
         ), None, []
     except OSError as exc:
         duration_ms = round((time.perf_counter() - started) * 1000)
         return ToolRun(
-            tool=tool, tool_version=TOOL_VERSIONS[tool], status="failed", command=args,
+            tool=tool, tool_version=tool_version, status="failed", command=args,
             exit_code=None, duration_ms=duration_ms, stdout="", stderr="", error=str(exc),
         ), None, []
 
@@ -82,8 +112,8 @@ def _status(findings: list[Finding], tool_runs: list[ToolRun], root: Path) -> st
         return "complete" if (root / "SKILL.md").is_file() else "incomplete"
     if all(run.status == "failed" for run in tool_runs):
         return "error"
-    if all(run.status == "skipped" for run in tool_runs):
-        return "complete" if (root / "SKILL.md").is_file() else "incomplete"
+    if any(run.status in {"failed", "skipped"} for run in tool_runs):
+        return "partial"
     return "complete" if any(run.status == "completed" for run in tool_runs) else "incomplete"
 
 
@@ -116,6 +146,12 @@ def scan(source: str, *, workspace_base: Path | None = None, include_external: b
     status = _status(findings, tool_runs if include_external else [], root)
     gate_payload = None
     dynamic_payload = None
+    stages = {
+        "ingestion": {"status": "complete", "details": ingestion},
+        "native": {"status": "complete"},
+        "cisco": {"status": next((run.status for run in tool_runs if run.tool == "cisco"), "not_requested")},
+        "nvidia": {"status": next((run.status for run in tool_runs if run.tool == "nvidia"), "not_requested")},
+    }
     if dynamic or force_dynamic or demo_dynamic:
         decision = decide(findings)
         gate_payload = {"escalate": decision.escalate, "reason": decision.reason}
@@ -123,13 +159,15 @@ def scan(source: str, *, workspace_base: Path | None = None, include_external: b
             dynamic_result = run_demo(root)
             findings.extend(dynamic_result.findings)
             dynamic_payload = dynamic_result.to_dict()
-            status = "complete"
+            stages["dynamic"] = {"status": "complete"}
+            status = "partial" if status == "partial" else "complete"
         elif force_dynamic or decision.escalate:
             try:
                 dynamic_result = run_dynamic(root)
                 findings.extend(dynamic_result.findings)
                 dynamic_payload = dynamic_result.to_dict()
-                status = "complete"
+                stages["dynamic"] = {"status": "complete"}
+                status = "partial" if status == "partial" else "complete"
             except DynamicUnavailable as exc:
                 dynamic_payload = {
                     "status": "error",
@@ -140,6 +178,7 @@ def scan(source: str, *, workspace_base: Path | None = None, include_external: b
                     "error": str(exc),
                 }
                 status = "error"
+                stages["dynamic"] = {"status": "failed", "reason": str(exc)}
         else:
             dynamic_payload = {
                 "status": "skipped",
@@ -149,22 +188,26 @@ def scan(source: str, *, workspace_base: Path | None = None, include_external: b
                 "events": [],
                 "error": None,
             }
+            stages["dynamic"] = {"status": "skipped", "reason": "Decision gate did not escalate"}
     return ScanResult(scan_id=scan_id, source=source, materialized_path=str(root),
                       created_at=created_at, findings=findings, tool_runs=tool_runs,
                       ingestion=ingestion, scan_status=status,
                       aggregate_severity=aggregate_severity(findings),
-                      gate=gate_payload, dynamic=dynamic_payload)
+                      gate=gate_payload,                       dynamic=dynamic_payload, stages=stages)
 
 
 def write_result(result: ScanResult, output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / f"{Path(result.source).stem or result.scan_id}.json"
-    path.write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
     for run in result.tool_runs:
         if run.status == "skipped":
             continue
-        (output_dir / f"{path.stem}.{run.tool}.stdout").write_text(run.stdout, encoding="utf-8")
-        (output_dir / f"{path.stem}.{run.tool}.stderr").write_text(run.stderr, encoding="utf-8")
+        stdout_path = output_dir / f"{path.stem}.{run.tool}.stdout"
+        stderr_path = output_dir / f"{path.stem}.{run.tool}.stderr"
+        stdout_path.write_text(run.stdout, encoding="utf-8")
+        stderr_path.write_text(run.stderr, encoding="utf-8")
+        run.report_path = str(stdout_path)
+    path.write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
     (output_dir / f"{path.stem}.meta.json").write_text(json.dumps({
         "scan_id": result.scan_id, "source": result.source, "created_at": result.created_at,
         "scan_status": result.scan_status, "aggregate_severity": result.aggregate_severity,

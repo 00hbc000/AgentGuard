@@ -10,11 +10,44 @@ from pathlib import Path
 import urllib.request
 
 
+_MAX_PATH_LENGTH = 4096
+_MAX_FILE_BYTES = 64 * 1024
+_SKILL_ROOT = Path("/skill").resolve()
+
+
+def _skill_path(value: object, key: str) -> str:
+    if not isinstance(value, str) or not value or len(value) > _MAX_PATH_LENGTH or "\x00" in value:
+        raise ValueError(f"{key} must be a non-empty path")
+    candidate = Path(value).resolve(strict=True)
+    if candidate != _SKILL_ROOT and _SKILL_ROOT not in candidate.parents:
+        raise ValueError(f"{key} must stay under /skill")
+    return str(candidate)
+
+
 def _normalize_arguments(action: str, arguments: dict) -> dict:
     normalized = dict(arguments)
     if action == "list_files" and "path" not in normalized and "directory" in normalized:
         normalized["path"] = normalized.pop("directory")
+    allowed = {
+        "list_files": {"path"},
+        "read_file": {"path"},
+        "run_python": {"script"},
+        "done": set(),
+    }.get(action)
+    if allowed is None or set(normalized) - allowed:
+        raise ValueError(f"Unknown or unsupported arguments for tool: {action}")
     return normalized
+
+
+def _validate_arguments(action: str, arguments: dict) -> dict:
+    validated = dict(arguments)
+    if action == "list_files":
+        validated["path"] = _skill_path(validated.get("path", "/skill"), "path")
+    elif action == "read_file":
+        validated["path"] = _skill_path(validated.get("path"), "path")
+    elif action == "run_python":
+        validated["script"] = _skill_path(validated.get("script"), "script")
+    return validated
 
 
 def _emit(event: dict) -> None:
@@ -47,6 +80,8 @@ def _tool(action: str, arguments: dict) -> tuple[int, str]:
         path = arguments.get("path", "/skill")
         result = subprocess.run(["find", path, "-maxdepth", "2", "-type", "f"], capture_output=True, text=True, timeout=10)
     elif action == "read_file":
+        if Path(arguments["path"]).stat().st_size > _MAX_FILE_BYTES:
+            raise ValueError("read_file target exceeds the size limit")
         result = subprocess.run(["sed", "-n", "1,240p", arguments["path"]], capture_output=True, text=True, timeout=10)
     elif action == "run_python":
         result = subprocess.run(["python", arguments["script"]], cwd="/skill", capture_output=True, text=True, timeout=30)
@@ -73,6 +108,7 @@ def main() -> int:
             tool, arguments, rationale = _action(endpoint, model, context)
             if tool not in allowed:
                 raise ValueError(f"tool is not allowlisted: {tool}")
+            arguments = _validate_arguments(tool, arguments)
             if tool == "done":
                 _emit({"type": "agent_action", "turn": turn + 1, "tool": tool, "arguments": arguments, "rationale": rationale})
                 return 0

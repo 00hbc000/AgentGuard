@@ -10,3 +10,5 @@ artifacts/
 __pycache__/
 .venv/
 .env
+*.jsonl
+fixtures_external/

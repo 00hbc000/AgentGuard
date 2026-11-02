@@ -41,7 +41,9 @@ def test_unconfigured_external_tools_do_not_mark_native_scan_incomplete(tmp_path
     monkeypatch.delenv("AGENTGUARD_CISCO_COMMAND", raising=False)
     monkeypatch.delenv("AGENTGUARD_NVIDIA_COMMAND", raising=False)
     result = scan(str(fixture), include_external=True)
-    assert result.scan_status == "complete"
+    assert result.scan_status == "partial"
+    assert result.stages["cisco"]["status"] == "skipped"
+    assert result.stages["nvidia"]["status"] == "skipped"
 
 
 def test_github_repository_url_is_normalized():

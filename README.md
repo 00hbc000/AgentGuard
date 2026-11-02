@@ -84,6 +84,12 @@ reachable, then runs the configured entrypoint in the sandbox pod. If those
 requirements are not met, the scan fails closed and reports that no skill code
 was executed.
 
+The website queues public GitHub, GitLab, and Bitbucket URLs and runs the
+native and configured external scanners before the decision gate. Use one
+skill URL at a time; a repository containing multiple `SKILL.md` files must
+provide a `/tree/<ref>/skills/<name>` subpath. See
+[docs/VERIFICATION.md](docs/VERIFICATION.md) for the Kali evidence checklist.
+
 ## Native gap rules
 
 | ID | Gap | Severity |

@@ -89,6 +89,7 @@ class ScanResult:
     aggregate_severity: str = "INFO"
     gate: dict[str, Any] | None = None
     dynamic: dict[str, Any] | None = None
+    stages: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         tools_used = [run.tool for run in self.tool_runs if run.status == "completed"]
@@ -110,6 +111,7 @@ class ScanResult:
             "created_at": self.created_at,
             "tool_runs": [run.to_dict() for run in self.tool_runs],
             "ingestion": self.ingestion,
+            "stages": self.stages,
         }
         if self.gate is not None:
             payload["decision_gate"] = self.gate

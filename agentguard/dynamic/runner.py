@@ -55,19 +55,28 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _build_images(cluster: str) -> None:
+def _build_images(cluster: str) -> tuple[str, str]:
     root = _repo_root()
-    _check(_run(["docker", "build", "-t", "agentguard-sandbox:local", str(root / "sandbox")], timeout=300), "Building sandbox image")
+    tag = os.environ.get("AGENTGUARD_IMAGE_TAG") or f"{uuid.uuid4().hex[:12]}"
+    sandbox_image = f"agentguard-sandbox:{tag}"
+    sink_image = f"agentguard-sink:{tag}"
+    build_args = ["--build-arg", f"AGENTGUARD_BUILD_TAG={tag}"]
+    _check(_run(["docker", "build", *build_args, "-t", sandbox_image, str(root / "sandbox")], timeout=300), "Building sandbox image")
     _check(_run(["docker", "build", "-f", str(root / "sandbox" / "Sink.Dockerfile"),
-                 "-t", "agentguard-sink:local", str(root / "sandbox")], timeout=300), "Building sink image")
-    _check(_run(["kind", "load", "docker-image", "agentguard-sandbox:local", "--name", cluster], timeout=180), "Loading sandbox image")
-    _check(_run(["kind", "load", "docker-image", "agentguard-sink:local", "--name", cluster], timeout=180), "Loading sink image")
+                 *build_args, "-t", sink_image, str(root / "sandbox")], timeout=300), "Building sink image")
+    _check(_run(["kind", "load", "docker-image", sandbox_image, "--name", cluster], timeout=180), "Loading sandbox image")
+    _check(_run(["kind", "load", "docker-image", sink_image, "--name", cluster], timeout=180), "Loading sink image")
+    return sandbox_image, sink_image
 
 
-def _apply_manifests() -> None:
+def _apply_manifests(sink_image: str) -> None:
     root = _repo_root()
     for name in ("namespace.yaml", "sink.yaml", "network-policy.yaml"):
         _check(_run(["kubectl", "apply", "-f", str(root / "k8s" / name)], timeout=60), f"Applying {name}")
+    _check(_run(["kubectl", "-n", "agentguard-sandbox", "set", "image",
+                 "deployment/agentguard-sink", f"sink={sink_image}"], timeout=60), "Selecting sink image")
+    _check(_run(["kubectl", "-n", "agentguard-sandbox", "rollout", "status",
+                 "deployment/agentguard-sink", "--timeout=90s"], timeout=120), "Waiting for sink")
     if os.environ.get("AGENTGUARD_AGENT_MODE") == "ollama":
         cidr = os.environ.get("AGENTGUARD_OLLAMA_CIDR")
         if not cidr:
@@ -91,10 +100,6 @@ spec:
       port: 11434
 """
         _check(_run(["kubectl", "apply", "-f", "-"], input_text=policy, timeout=60), "Applying Ollama egress policy")
-    _check(_run([
-        "kubectl", "-n", "agentguard-sandbox", "rollout", "status",
-        "deployment/agentguard-sink", "--timeout=90s",
-    ], timeout=120), "Waiting for sink")
 
 
 def _monitoring_tier() -> str:
@@ -116,12 +121,14 @@ def _start_tetragon_stream(since: datetime) -> subprocess.Popen[str] | None:
         return None
 
 
-def _event_contains_pod(value: object, pod: str) -> bool:
+def _event_matches_pod(value: object, pod: str, namespace: str = "agentguard-sandbox") -> bool:
     if isinstance(value, dict):
-        return any(_event_contains_pod(item, pod) for item in value.values())
+        if value.get("name") == pod and value.get("namespace") == namespace:
+            return True
+        return any(_event_matches_pod(item, pod, namespace) for item in value.values())
     if isinstance(value, list):
-        return any(_event_contains_pod(item, pod) for item in value)
-    return value == pod
+        return any(_event_matches_pod(item, pod, namespace) for item in value)
+    return False
 
 
 def _finish_tetragon_stream(process: subprocess.Popen[str] | None, pod: str) -> list[dict]:
@@ -143,7 +150,7 @@ def _finish_tetragon_stream(process: subprocess.Popen[str] | None, pod: str) -> 
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if isinstance(event, dict) and _event_contains_pod(event, pod):
+        if isinstance(event, dict) and _event_matches_pod(event, pod):
             events.append({"type": "tetragon", "pod": pod, "event": event})
     return events
 
@@ -153,7 +160,7 @@ def _run_probe(pod: str, target: str, timeout: int = 20) -> tuple[bool, str]:
     return result.returncode == 0, (result.stdout + result.stderr).strip()
 
 
-def _create_pod(pod: str) -> None:
+def _create_pod(pod: str, image: str, scan_id: str) -> None:
     agent_env = ""
     if os.environ.get("AGENTGUARD_AGENT_MODE") == "ollama":
         agent_env = f"""    - name: AGENTGUARD_AGENT_MODE
@@ -170,21 +177,58 @@ metadata:
   namespace: agentguard-sandbox
   labels:
     agentguard.io/role: skill-sandbox
+    agentguard-scan: "true"
+    scan-id: "{scan_id}"
 spec:
   restartPolicy: Never
+  activeDeadlineSeconds: 300
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
   containers:
   - name: skill
-    image: agentguard-sandbox:local
-    imagePullPolicy: IfNotPresent
+    image: {image}
+    imagePullPolicy: Never
     command: ["sleep", "3600"]
     env:
     - name: AGENTGUARD_SINK_URL
-      value: http://agentguard-sink.agentguard-sandbox.svc.cluster.local:8080
+      value: http://agentguard-sink.agentguard-sandbox.svc.cluster.local:8080/collect/{scan_id}
+    - name: AGENTGUARD_SCAN_TOKEN
+      value: {scan_id}
 {agent_env}    securityContext:
       allowPrivilegeEscalation: false
-      readOnlyRootFilesystem: false
-      capabilities:
-        drop: ["ALL"]
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  capabilities:
+    drop: ["ALL"]
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+    ephemeral-storage: 64Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+    ephemeral-storage: 512Mi
+volumeMounts:
+- name: tmp
+  mountPath: /tmp
+- name: skill
+  mountPath: /skill
+- name: honeypots
+  mountPath: /honeypots
+  volumes:
+  - name: tmp
+emptyDir: {{}}
+  - name: skill
+emptyDir: {{}}
+  - name: honeypots
+emptyDir: {{}}
 """
     _check(_run(["kubectl", "apply", "-f", "-"], input_text=manifest, timeout=60), "Creating sandbox pod")
     _check(_run(["kubectl", "-n", "agentguard-sandbox", "wait", "--for=condition=Ready", f"pod/{pod}", "--timeout=90s"], timeout=120), "Waiting for sandbox pod")
@@ -213,7 +257,7 @@ def _copy_skill(root: Path, pod: str) -> None:
         raise DynamicUnavailable(f"Copying skill into sandbox failed: {detail or 'no diagnostic output'}")
 
 
-def _events_from_logs(since: datetime) -> list[dict]:
+def _events_from_logs(since: datetime, scan_id: str) -> list[dict]:
     logs = _run([
         "kubectl", "-n", "agentguard-sandbox", "logs", "deployment/agentguard-sink",
         "--since-time", since.isoformat(),
@@ -224,7 +268,7 @@ def _events_from_logs(since: datetime) -> list[dict]:
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if isinstance(event, dict):
+        if isinstance(event, dict) and event.get("scan_token") == scan_id:
             events.append(event)
     return events
 
@@ -250,16 +294,27 @@ def run(root: Path) -> DynamicResult:
     _require_tools()
     cluster = os.environ.get("AGENTGUARD_KIND_CLUSTER", "agentguard")
     namespace = "agentguard-sandbox"
-    pod = f"agentguard-run-{uuid.uuid4().hex[:8]}"
-    _build_images(cluster)
-    _apply_manifests()
+    scan_id = uuid.uuid4().hex
+    pod = f"agentguard-run-{scan_id[:8]}"
+    sandbox_image, sink_image = _build_images(cluster)
+    _apply_manifests(sink_image)
     scan_started = datetime.now(timezone.utc)
     tetragon_stream = _start_tetragon_stream(scan_started)
     try:
-        _create_pod(pod)
+        _create_pod(pod, sandbox_image, scan_id)
+        image_id = _run([
+            "kubectl", "-n", namespace, "get", "pod", pod,
+            "-o", "jsonpath={.status.containerStatuses[?(@.name=='skill')].imageID}",
+        ], timeout=30)
+        image_event = {
+            "type": "sandbox_image",
+            "tag": sandbox_image,
+            "image_id": image_id.stdout.strip() if image_id.returncode == 0 else None,
+        }
         _check(_run(["kubectl", "-n", namespace, "exec", pod, "--", "mkdir", "-p", "/skill", "/honeypots"], timeout=30), "Preparing sandbox")
         _copy_skill(root, pod)
-        _check(_run(["kubectl", "-n", namespace, "exec", pod, "--", "sh", "-c", "printf 'synthetic-honeypot\\n' > /honeypots/aws-credentials"], timeout=30), "Creating honeypot")
+        _check(_run(["kubectl", "-n", namespace, "exec", pod, "--", "sh", "-c",
+                     f"printf 'agentguard-honeypot-{scan_id}\\n' > /honeypots/aws-credentials"], timeout=30), "Creating honeypot")
         internet_ok, internet_detail = _run_probe(
             pod,
             "import socket; socket.create_connection(('1.1.1.1', 80), 3)",
@@ -278,6 +333,15 @@ def run(root: Path) -> DynamicResult:
                 "NetworkPolicy sink allow-list proof failed: sandbox could not reach the sink. "
                 f"Probe output: {sink_detail}"
             )
+        dns_ok, dns_detail = _run_probe(
+            pod,
+            "import socket; socket.create_connection(('1.1.1.1', 53), 3)",
+        )
+        if dns_ok:
+            raise DynamicUnavailable(
+                "NetworkPolicy external DNS proof failed: sandbox reached a public DNS server. "
+                f"Probe output: {dns_detail}"
+            )
         prepare = _run(["kubectl", "-n", namespace, "exec", pod, "--", "python", "/opt/agentguard/run_skill.py", "--phase", "prepare"], timeout=60)
         if prepare.returncode:
             return DynamicResult("error", "fallback", events=[{"type": "prepare_error", "stderr": prepare.stderr}], error="Sandbox preparation failed")
@@ -288,7 +352,8 @@ def run(root: Path) -> DynamicResult:
         execute = _run(["kubectl", "-n", namespace, "exec", pod, "--", *args], timeout=int(os.environ.get("AGENTGUARD_DYNAMIC_TIMEOUT", "120")))
         tetragon_events = _finish_tetragon_stream(tetragon_stream, pod)
         tetragon_stream = None
-        events = _events_from_logs(scan_started)
+        events = [image_event]
+        events.extend(_events_from_logs(scan_started, scan_id))
         events.extend(_events_from_pod(pod))
         events.extend(tetragon_events)
         trace = _run(["kubectl", "-n", namespace, "exec", pod, "--", "cat", "/tmp/agentguard-trace"], timeout=30)
@@ -299,6 +364,7 @@ def run(root: Path) -> DynamicResult:
                 "honeypot_hit": True,
                 "path": "/honeypots/aws-credentials",
                 "destination": "agentguard-sink",
+                "scan_token": scan_id,
                 "monitoring_tier": "tetragon" if tetragon_events else "fallback",
             })
         if execute.returncode:
