@@ -65,7 +65,7 @@ python -m agentguard.cli scan \
 
 Exit codes: `0` is below the configured threshold, `1` meets it, and `2` means malformed input, incomplete analysis, or scanner error. Use `--fail-on-severity INFO|LOW|MEDIUM|HIGH|CRITICAL` to change the threshold.
 
-Dynamic review is opt-in. Gate-driven mode escalates ambiguous static evidence:
+Dynamic review is opt-in for the CLI. Gate-driven mode escalates ambiguous static evidence:
 
 ```bash
 python main.py scan fixtures/combined-chain --no-external --dynamic --output runs/dynamic
@@ -84,11 +84,23 @@ reachable, then runs the configured entrypoint in the sandbox pod. If those
 requirements are not met, the scan fails closed and reports that no skill code
 was executed.
 
-The website queues public GitHub, GitLab, and Bitbucket URLs and runs the
-native and configured external scanners before the decision gate. Use one
-skill URL at a time; a repository containing multiple `SKILL.md` files must
-provide a `/tree/<ref>/skills/<name>` subpath. See
+The website accepts public GitHub, GitLab, and Bitbucket URLs and runs native,
+configured external scanners, and forced dynamic analysis synchronously for
+the submitted skill. Use one skill URL at a time; a repository containing
+multiple `SKILL.md` files must provide a `/tree/<ref>/skills/<name>` subpath.
+Cisco and NVIDIA are shown as skipped until their commands are installed and
+configured. See
 [docs/VERIFICATION.md](docs/VERIFICATION.md) for the Kali evidence checklist.
+
+For a complete Kali smoke test after rebuilding images:
+
+```bash
+./scripts/kali_demo_verify.sh \
+  https://github.com/trailofbits/overtly-malicious-skills/tree/main/skills/csv-summarizer
+```
+
+The CSV sample is benign and should produce zero findings. Use the ignored
+`fixtures/combined-chain` fixture to demonstrate native static findings.
 
 ## Native gap rules
 

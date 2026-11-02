@@ -1,4 +1,5 @@
 from agentguard.web import _render
+from agentguard.web import _PAGE
 
 
 def test_web_renders_gate_and_dynamic_tier():
@@ -18,3 +19,8 @@ def test_web_renders_gate_and_dynamic_tier():
     assert "Decision gate" in page
     assert "demo_synthetic" in page
     assert "honeypot_exfiltration" in page
+
+
+def test_web_form_always_requests_dynamic_analysis():
+    assert 'name="dynamic" value="1"' in _PAGE
+    assert 'name="force_dynamic" value="1"' in _PAGE
