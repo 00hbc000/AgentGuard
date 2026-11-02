@@ -26,6 +26,8 @@ def test_web_form_offers_skillward_style_scan_modes():
     assert 'value="sandbox"' in _PAGE
     assert 'value="deep"' in _PAGE
     assert 'Sandbox and Deep Trace execute inside Kubernetes.' in _PAGE
+    assert 'fetch("/api/jobs"' in _PAGE
+    assert 'scan_mode:scanMode' in _PAGE
 
 
 def test_web_page_marks_selected_scan_mode():

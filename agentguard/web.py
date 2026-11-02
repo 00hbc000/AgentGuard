@@ -29,28 +29,39 @@ def _validate_public_git_url(source: str) -> None:
         raise ValueError("Repository URLs must not contain credentials, query strings, or fragments.")
 
 
-def _run_job(job_id: str, source: str) -> None:
+def _run_job(job_id: str, source: str, scan_mode: str) -> None:
     with _JOBS_LOCK:
-        _JOBS[job_id]["status"] = "running"
+        _JOBS[job_id].update(status="running", phase="ingestion", message="Downloading repository and starting static analysis")
     try:
-        result = scan(source, scan_mode="sandbox", include_external=True).to_dict()
+        with _JOBS_LOCK:
+            _JOBS[job_id].update(
+                phase="sandbox" if scan_mode in {"sandbox", "deep"} else "static",
+                message=(
+                    "Running static analysis, then Kubernetes sandbox verification"
+                    if scan_mode in {"sandbox", "deep"}
+                    else "Running native rules and optional scanners"
+                ),
+            )
+        result = scan(source, scan_mode=scan_mode, include_external=True).to_dict()
     except Exception as exc:
         _LOGGER.exception("Background scan %s failed", job_id)
         with _JOBS_LOCK:
-            _JOBS[job_id].update(status="error", error=str(exc))
+            _JOBS[job_id].update(status="error", phase="failed", error=str(exc))
         return
     with _JOBS_LOCK:
         job_status = "partial" if result.get("scan_status") == "partial" else "complete"
         _JOBS[job_id].update(status=job_status, result=result)
 
 
-def _create_job(source: str) -> str:
+def _create_job(source: str, scan_mode: str = "quick") -> str:
     source = source.strip().replace("\u200b", "").replace("\ufeff", "")
     _validate_public_git_url(source)
+    if scan_mode not in {"quick", "sandbox", "deep"}:
+        raise ValueError("scan_mode must be quick, sandbox, or deep")
     job_id = uuid.uuid4().hex
     with _JOBS_LOCK:
-        _JOBS[job_id] = {"job_id": job_id, "status": "queued", "source": source}
-    threading.Thread(target=_run_job, args=(job_id, source), daemon=True).start()
+        _JOBS[job_id] = {"job_id": job_id, "status": "queued", "phase": "queued", "message": "Waiting to start", "source": source, "scan_mode": scan_mode}
+    threading.Thread(target=_run_job, args=(job_id, source, scan_mode), daemon=True).start()
     return job_id
 
 
@@ -81,10 +92,10 @@ document.getElementById("scan-form").addEventListener("submit", () => {
   document.getElementById("submit-scan").disabled = true;
   document.getElementById("job-status").textContent = "Starting scan...";
 });
-/*
 document.getElementById("scan-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const source = document.getElementById("source").value.trim();
+  const scanMode = document.querySelector("input[name=scan_mode]:checked").value;
   const status = document.getElementById("job-status");
   const results = document.getElementById("results");
   const button = document.getElementById("submit-scan");
@@ -94,7 +105,7 @@ document.getElementById("scan-form").addEventListener("submit", async (event) =>
   status.textContent = "Queueing scan...";
   results.innerHTML = "";
   try {
-    const response = await fetch("/api/jobs", {method:"POST", headers:{"Content-Type":"application/x-www-form-urlencoded;charset=UTF-8"}, body:new URLSearchParams({source})});
+    const response = await fetch("/api/jobs", {method:"POST", headers:{"Content-Type":"application/x-www-form-urlencoded;charset=UTF-8"}, body:new URLSearchParams({source, scan_mode:scanMode})});
     const responseText = await response.text();
     let job;
     try {
@@ -107,8 +118,8 @@ document.getElementById("scan-form").addEventListener("submit", async (event) =>
     timer = setInterval(async () => {
       try {
         polls += 1;
-        if (polls > 180) {
-          throw new Error("Scan timed out after 3 minutes.");
+        if (polls > 600) {
+          throw new Error("Scan timed out after 10 minutes.");
         }
         const poll = await fetch("/api/jobs/" + job.job_id);
         const pollText = await poll.text();
@@ -119,7 +130,7 @@ document.getElementById("scan-form").addEventListener("submit", async (event) =>
           throw new Error("Status request returned HTTP " + poll.status + " instead of JSON: " + pollText.slice(0, 300));
         }
         if (!poll.ok) { throw new Error(current.error || "Could not read scan status."); }
-        status.textContent = "Scan status: " + current.status;
+        status.textContent = "Scan " + current.status + " · " + (current.message || current.phase || "");
         if (current.status === "complete" || current.status === "partial") {
           clearInterval(timer);
           results.innerHTML = current.html;
@@ -138,7 +149,6 @@ document.getElementById("scan-form").addEventListener("submit", async (event) =>
     status.textContent = error.message || "Could not queue scan.";
     button.disabled = false;
   }
-*/
 </script></body></html>"""
 
 
@@ -247,7 +257,12 @@ class Handler(BaseHTTPRequestHandler):
                 source = _job_source(self, raw_body)
                 if not source.strip():
                     raise ValueError("A repository URL is required.")
-                job_id = _create_job(source)
+                fields = parse_qs(raw_body, keep_blank_values=True)
+                scan_mode = fields.get("scan_mode", ["quick"])[0]
+                if self.headers.get("Content-Type", "").split(";", 1)[0].lower() == "application/json":
+                    payload = json.loads(raw_body)
+                    scan_mode = str(payload.get("scan_mode", "quick"))
+                job_id = _create_job(source, scan_mode)
                 self._send(json.dumps({"job_id": job_id, "status": "queued"}), 202, "application/json")
             except (json.JSONDecodeError, TypeError, ValueError) as exc:
                 self._send(json.dumps({"error": str(exc)}), 400, "application/json")
