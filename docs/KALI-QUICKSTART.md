@@ -1,6 +1,6 @@
 # AgentGuard on Kali: Part 1 static scan, Part 2 dynamic sandbox
 
-> **Demo day / after a reboot:** run `bash scripts/demo_start.sh --verify` and read [docs/DEMO.md](DEMO.md).
+> **Demo day / after a reboot:** run `bash scripts/demo_start.sh --verify` and read [docs/DEMO.md](DEMO.md). To explain the system to someone: [docs/EXPLAIN-FOR-PROFESSOR.md](EXPLAIN-FOR-PROFESSOR.md).
 
 AgentGuard scans an AI agent skill in two stages:
 
