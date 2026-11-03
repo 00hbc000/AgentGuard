@@ -139,6 +139,7 @@ _BATCH_BODY = (
     "<div class='row'><button class='ghost' id='fill-mal' type='button'>Add all malicious samples</button>"
     "<button class='ghost' id='fill-ben' type='button'>Add all benign controls</button>"
     "<button class='ghost' id='fill-local' type='button'>Add local fixtures</button>"
+    "<button class='ghost' id='fill-runtime' type='button'>Add public runtime samples</button>"
     "<label class='muted'><input type='checkbox' id='expand' checked> Expand repositories into individual skills</label></div>"
     + _MODE_RADIOS +
     "<div class='row'><button id='run-batch' type='button'>Run batch</button><span id='batch-status' class='muted'></span></div>"
@@ -150,7 +151,8 @@ _BATCH_SCRIPT = """
 let samples=[],timer=null,batchId=null;
 function add(list){const box=$("#inputs");const have=new Set(box.value.split("\\n").map(s=>s.trim()));list.forEach(s=>{const line="sample:"+s.id;if(!have.has(line)){box.value+=(box.value&&!box.value.endsWith("\\n")?"\\n":"")+line+"\\n"}})}
 api("/api/samples").then(l=>{samples=l});
-$("#fill-mal").onclick=()=>add(samples.filter(s=>s.expected=="malicious"));
+$("#fill-mal").onclick=()=>add(samples.filter(s=>s.expected=="malicious"&&!s.runtime));
+$("#fill-runtime").onclick=()=>add(samples.filter(s=>s.runtime));
 $("#fill-ben").onclick=()=>add(samples.filter(s=>s.expected=="benign"));
 $("#fill-local").onclick=()=>add(samples.filter(s=>s.kind=="local"));
 function table(b){const rows=b.jobs.map(j=>'<tr><td>'+(j.status=="complete"||j.status=="partial"?'<a href="/report/'+j.id+'">'+esc(j.label)+'</a>':esc(j.label))+'<br><span class="meta">'+esc(j.source)+'</span></td><td>'+esc(j.scan_mode)+'</td><td>'+pill(j.status)+'</td><td>'+pill(j.verdict)+'</td><td>'+esc(j.severity||"-")+'</td><td>'+esc(j.finding_count==null?"-":j.finding_count)+'</td><td>'+esc(j.expected||"-")+' '+pill(j.outcome)+'</td><td class="meta">'+esc(j.error||"")+'</td></tr>').join("");

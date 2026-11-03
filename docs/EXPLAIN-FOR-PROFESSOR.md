@@ -129,7 +129,11 @@ and the **NetworkPolicy**. Two images are built by Docker and loaded into kind: 
 - Real kind cluster (Calico + Tetragon): `verify_sandbox.py` **ALL CHECKS PASSED**: benign skill `no_findings`; two exfiltration skills CRITICAL
   `DYN_HONEYPOT_EXFIL` (verdict `malicious`); external-attempt skill HIGH; env-dump skill HIGH. All four monitors active.
 - Quick-mode batch of 25 samples with all three engines: 20 of 20 malicious flagged, 3 benign clean, 2 benign large skills flagged `high_risk`.
-- 117 automated tests; the sandbox harness is also tested locally and through a fake cluster.
+- 120 automated tests; the sandbox harness is also tested locally and through a fake cluster.
+- Public malicious skills for the sandbox: 12 runnable MalSkillBench skills (reverse shells, credential theft, downloaders, DoH
+  exfiltration), chosen by reading their code. Observed statically in development: the native rules miss 6 of the 12, which shows why the
+  sandbox is needed. Their *sandbox* results come from `scripts/eval_public_dynamic.py` on the cluster; see `docs/DYNAMIC-ANALYSIS.md`.
+  Before that script has been run, the only runtime proof is on our own controlled samples.
 - Sources used for test material: Trail of Bits `overtly-malicious-skills`, `agent-guard-corpus`, Cisco `skill-scanner` eval skills (malicious);
   Anthropic `skills` (benign controls). The approach is inspired by **SkillWard** (static -> LLM -> sandbox with honeypots and a runtime guard);
   differences: Kubernetes with NetworkPolicy instead of plain Docker, canary-based *proof*, and no LLM triage stage.

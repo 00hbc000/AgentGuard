@@ -46,6 +46,50 @@ inside the skill pod (guard, strace, agent) could in principle be tampered with 
 `dynamic.coverage` records `commands_run`, `entrypoint_found`, `trace_available`, `guard_enabled`. A skill with no runnable
 entrypoint, or a failed sandbox, produces verdict **inconclusive**, never "clean".
 
+## Public malicious skills in the sandbox
+
+The five controlled samples in `samples/` are ours. To check the sandbox against skills we did not write, the library
+has a group of 12 skills from [MalSkillBench](https://github.com/lxyeternal/MalSkillBench) (dataset label: malicious;
+licence: academic research use, so they are **downloaded on demand and never vendored**). They were picked by reading
+the code, not by AgentGuard's results: the Python entry point must use only the standard library (the pod has no pip, a
+`requests` import would only prove an ImportError) and must run without arguments. Skills that need `requests`
+(for example the Skill-Inject file-backup script) and skills whose payload is a shell command inside `SKILL.md`
+(snyk `toxicskills-goof`) were left out for that reason.
+
+| Skill | Behaviour (dataset) | Native rules | Cisco 2.3.2 |
+|---|---|---|---|
+| `data-exfiltration` | wild; packs `/etc/passwd` + `~/.ssh`, leaks via DNS-over-HTTPS | nothing | MEDIUM |
+| `agentuity-cli-project-list` | wild; ngrok reverse shell, reads `id_rsa`, AWS creds | AG002 | HIGH |
+| `gen-docs` | wild; C2 reverse shell + `~/.bashrc` persistence | nothing | HIGH |
+| `docker-expert` | wild; reads `id_rsa`, docker config, env, metadata IP | nothing | LOW |
+| `osprey-migrate` | wild; downloads a binary from a raw IP, `chmod`, `.bashrc` | nothing | MEDIUM |
+| `crypto-analysis` | wild; downloader + persistence + reboot | nothing | CRITICAL |
+| `write-issue__CI_B1` | generated; `/etc/passwd` to webhook.site | AG002 | HIGH |
+| `docs-write__CI_B2` | generated; env + `id_rsa` + `.env` to burpcollaborator | AG001, AG005 | HIGH |
+| `copilot__MIXED_B2` | generated; env + `id_rsa` to ngrok | AG001, AG005 | CRITICAL |
+| `vector-index-tuning__CI_B3` | generated; fetches a payload and `exec()`s it | AG010 | CRITICAL |
+| `base64-payload` | Cisco test skill; **limit case**, exec sits in a function nothing calls | AG008, AG010 | CRITICAL |
+| `continuous-learning` | wild; real reverse shell, **limit case**, needs a config file the pod lacks | nothing | INFO |
+
+The two static columns were observed in development (native rules and Cisco only; NVIDIA was not run there). They show
+a real gap: the native rules have no reverse-shell, persistence or downloader rule, so 6 of the 12 are invisible to them,
+and `continuous-learning` is practically invisible to every static engine we ran. That is the case for the sandbox.
+
+**What the sandbox does with them is not recorded here**: this development environment has no Kubernetes, so none of
+these skills were executed. Run them where the cluster is:
+
+```bash
+python scripts/eval_public_dynamic.py                 # static + sandbox for all 12 (about 10-20 minutes)
+python scripts/eval_public_dynamic.py --no-external   # faster: native rules only
+python scripts/eval_public_dynamic.py --only msb-gen-docs
+```
+
+It prints one row per skill (native/Cisco/NVIDIA maximum severity, sandbox findings, commands run/failed, verdict) and writes
+`runs/public-dynamic/results.md`. It asserts nothing: a skill whose payload needs the real internet will show a blocked
+connection attempt (`DYN_EXFIL_ATTEMPT`/`DYN_EGRESS_ATTEMPT`), not a `DYN_HONEYPOT_EXFIL` proof, because only the sink is
+reachable. In the dashboard the batch page has an **Add public runtime samples** button. Expect the two limit cases to
+come back with few or no runtime findings; if they do, that is the documented "needs a trigger" limit, not a bug.
+
 ## Known limits
 
 - The runtime guard covers **Python** only; non-Python code is seen through `strace` (when allowed) and the sink.

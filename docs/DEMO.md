@@ -41,6 +41,7 @@ If asked about accuracy, the measured Quick-mode result is 20 of 20 malicious sa
 - *Why not just run the skill?* Hostile code: it runs only in a read-only, non-root, no-capabilities pod whose egress goes only to our sink.
 - *How do you know it is exfiltration?* Canary tokens unique per scan, seen in the sink's log (and in base64/hex/url forms).
 - *Limits?* Python-only runtime guard (strace covers the rest), DNS is allowed, prose-only attacks need LLM review, a skill that detects the sandbox can pass.
+- *Did you only test your own samples?* The five controlled samples are ours. We also picked 12 public MalSkillBench skills (real reverse shells, credential theft, downloaders) by reading their code; `python scripts/eval_public_dynamic.py` runs them in the sandbox and reports what each engine saw. Quote only the results you have actually run; do not run the full script live (10-20 minutes).
 - *What is Deep mode?* Sandbox plus an optional Ollama agent; off by default and never replaces the scripted run.
 
 ## If something goes wrong on the day

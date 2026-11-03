@@ -16,6 +16,8 @@ _TOB = "https://github.com/trailofbits/overtly-malicious-skills/tree/main/skills
 _CORPUS = "https://github.com/elliottwaves-20/agent-guard-corpus/tree/main/malicious/"
 _CISCO = "https://github.com/cisco-ai-defense/skill-scanner/tree/main/evals/skills/"
 _ANTHROPIC = "https://github.com/anthropics/skills/tree/main/skills/"
+_MSB = "https://github.com/lxyeternal/MalSkillBench/tree/main/Dataset/Skills/malware/"
+MSB_GROUP = "MalSkillBench - public skills with runnable code (for Sandbox Scan)"
 
 
 def _local(sample_id: str, label: str, expected: str, shows: str) -> dict[str, Any]:
@@ -26,6 +28,14 @@ def _local(sample_id: str, label: str, expected: str, shows: str) -> dict[str, A
 def _remote(sample_id: str, label: str, group: str, url: str, expected: str, shows: str) -> dict[str, Any]:
     return {"id": sample_id, "label": label, "group": group, "kind": "remote", "url": url,
             "expected": expected, "shows": shows}
+
+
+def _msb(name: str, behavior: str, split: str, shows: str) -> dict[str, Any]:
+    """A MalSkillBench skill. ``expected`` is the dataset's own label, not an AgentGuard claim."""
+    item = _remote("msb-" + name.lower().replace("__", "-").replace("_", "-"), name, MSB_GROUP, _MSB + name, "malicious",
+                   "[%s - %s] %s" % (behavior, split, shows))
+    item["runtime"] = True
+    return item
 
 
 SAMPLES: list[dict[str, Any]] = [
@@ -81,6 +91,33 @@ SAMPLES: list[dict[str, Any]] = [
     _remote("anthropic-claude-api", "anthropics/skills - claude-api", "Benign public controls",
             _ANTHROPIC + "claude-api", "benign",
             "Docs that warn against curl|sh and prompt injection: findings are downgraded to LOW."),
+    # Public malicious skills picked because their Python entry point uses only the standard library
+    # (the sandbox image has no pip) and runs without arguments. Chosen by reading the code, not by
+    # AgentGuard's results. They are downloaded on demand, never vendored (research-use licence).
+    _msb("data-exfiltration", "B1 exfiltration", "wild",
+         "Packs /etc/passwd and ~/.ssh, then leaks them over DNS-over-HTTPS."),
+    _msb("agentuity-cli-project-list", "B6 reverse shell", "wild",
+         "ngrok reverse shell (dup2 + /bin/sh) and reads ~/.ssh/id_rsa and ~/.aws/credentials."),
+    _msb("gen-docs", "B6 reverse shell + B5 persistence", "wild",
+         "Connects to a C2 host, spawns bash -i and appends a payload to ~/.bashrc and ~/.zshrc."),
+    _msb("docker-expert", "B2 credential theft", "wild",
+         "Reads ~/.ssh/id_rsa, ~/.docker/config.json and the whole environment; probes the cloud metadata IP."),
+    _msb("osprey-migrate", "B4 malware delivery + B5 persistence", "wild",
+         "Downloads a binary from a raw IP, chmod 755 it and sources it from ~/.bashrc."),
+    _msb("crypto-analysis", "B4 malware delivery + B5 persistence", "wild",
+         "Downloads a config, makes it executable, hooks ~/.bashrc, then tries to reboot the machine."),
+    _msb("write-issue__CI_B1", "B1 exfiltration", "generated",
+         "Collects /etc/passwd and system info and POSTs it to webhook.site."),
+    _msb("docs-write__CI_B2", "B2 credential theft", "generated",
+         "Sends all environment variables, ~/.ssh/id_rsa and ~/.env to a burpcollaborator host."),
+    _msb("copilot__MIXED_B2", "B2 credential theft", "generated",
+         "Sends environment variables and ~/.ssh/id_rsa to an ngrok /exfil endpoint."),
+    _msb("vector-index-tuning__CI_B3", "B3 remote code execution", "generated",
+         "Fetches a remote payload and exec()s it; a second exec is gated on DEPLOYMENT_MODE."),
+    _msb("base64-payload", "B3 obfuscated exec", "test (Cisco eval)",
+         "Limit case: the exec of a base64 payload is inside a function nothing calls, so it never fires."),
+    _msb("continuous-learning", "B6 reverse shell", "wild",
+         "Limit case: real reverse shell, but it first needs a config file that does not exist in the pod."),
 ]
 
 _BY_ID = {item["id"]: item for item in SAMPLES}
